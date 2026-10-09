@@ -888,7 +888,8 @@
                   "value": "{{nextCursor}}"
                 }
               ]
-            }
+            },
+            "description": "The next page after the first one; with an empty cursor (Ada has 2 workouts or fewer), the first page again."
           }
         },
         {

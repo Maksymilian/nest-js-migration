@@ -125,7 +125,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('responds 200', () => pm.response.to.have.status(200));"
+                  "pm.test('responds 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has no errors', () => pm.expect(pm.response.json().errors).to.be.undefined);"
                 ]
               }
             }
