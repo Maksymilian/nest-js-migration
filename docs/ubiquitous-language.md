@@ -51,6 +51,7 @@ In this context, "workout" on its own always means a **logged workout** (as in "
 | **Training Log** | A member's counting workouts in chronological order, newest first. What the member app shows as their history. | `TrainingLog` (read model), `trainingLog` GraphQL field | history, feed, timeline, activity list |
 | **Logged Workout** | This context's own model of a workout from Workout Tracking: discipline, started at, metrics. Changed only through the anticorruption layer. | `LoggedWorkout` aggregate, `LoggedWorkoutId` (the same value as the upstream WorkoutId) | workout record, activity, entry |
 | **Log a Workout** | Add a workout to the member's training log. What a recording upstream becomes here. | `LoggedWorkout.log()`, `WorkoutLogged` | import, sync, create |
+| **Workout Metrics** | What a logged workout measured: duration, distance, calories. This context's own value objects, defined separately from Workout Tracking's, as with Discipline. | `WorkoutMetrics`, `Duration`, `Distance`, `Calories` value objects | stats, data, values |
 | **Revise** | Replace a logged workout's metrics. What a correction upstream becomes here. | `LoggedWorkout.revise()`, `LoggedWorkoutRevised` | update, correct, edit |
 | **Stop Counting** | Keep a logged workout but exclude it from everything. What a void upstream becomes here. | `LoggedWorkout.stopCounting()`, `LoggedWorkoutStoppedCounting` | delete, void, remove |
 | **Counts** | A logged workout counts until it stops counting. Only counting workouts contribute to summaries, streaks, personal records and goals. | `LoggedWorkout.counts` | is active, is valid |
@@ -72,7 +73,7 @@ In this context, "workout" on its own always means a **logged workout** (as in "
 | **Personal Record** | A member's best value of a **Record Metric** in a single counting workout of one discipline, with the logged workout it came from. Replaced as a whole when it changes. | `PersonalRecord` value object | PR, best, max, high score |
 | **Personal Records** | All of a member's personal records in one discipline, one per record metric. They change together and only through it. | `PersonalRecords` aggregate | leaderboard, stats |
 | **Record Metric** | What a personal record measures: `LongestDistance`, `LongestDuration`, `MostCalories`. | `RecordMetric` | |
-| **Consider** | Compare a newly logged workout with the member's personal records in its discipline. | `PersonalRecords.consider(loggedWorkout)` | check, evaluate |
+| **Consider** | Compare a newly logged workout with the member's personal records in its discipline. | `PersonalRecords.consider(loggedWorkoutId, startedAt, metrics)` | check, evaluate |
 | **Set a Personal Record** | A logged workout beats the member's current personal record, or there was none. | `PersonalRecordSet` | break, beat, achieve |
 | **Record Candidate** | For one record metric, the counting logged workout with the best value in the member's training log for that discipline. | `RecordCandidate` value object | best workout, top entry |
 | **Recalculate** | Set the member's personal records in a discipline from the record candidates, after a revision or a stop-counting. | `PersonalRecords.recalculate(recordCandidates)` | refresh, rebuild |
@@ -87,7 +88,7 @@ In this context, "workout" on its own always means a **logged workout** (as in "
 | **Goal Target** | The amount of the goal metric to reach. Always greater than zero. | `GoalTarget` value object | amount, value |
 | **Goal Period** | The dates the goal runs from and to. It must end in the future when the goal is set. | `GoalPeriod` value object | duration, deadline |
 | **Grace Period** | One day after the goal period ends, during which the goal stays active, so workouts from inside the goal period that are logged late still count. | `GoalPeriod.graceEnd` | buffer, extension |
-| **Goal Progress Criteria** | Which logged workouts count towards a goal: counting, started inside the goal period, of the goal's discipline (if any). Defined by the goal itself. The grace period doesn't widen them. | `TrainingGoal.progressCriteria()`, `GoalProgressCriteria.isMetBy(loggedWorkout)` | filter, query |
+| **Goal Progress Criteria** | Which logged workouts count towards a goal: counting, started inside the goal period, of the goal's discipline (if any). Defined by the goal itself. The grace period doesn't widen them. | `TrainingGoal.progressCriteria()`, `GoalProgressCriteria.isMetBy(discipline, startedAt)` | filter, query |
 | **Goal Progress** | The sum of the goal metric over the logged workouts that meet the goal's progress criteria. Always calculated from the training log, never stored. | `GoalProgress` value object | completion, percentage |
 | **Set a Goal** | A member creates a training goal. | `TrainingGoal.set()`, `TrainingGoalSet`, `setTrainingGoal` mutation | create, add |
 | **Record Goal Progress** | Give a goal its current goal progress, so it can tell whether it's achieved. | `TrainingGoal.recordProgress(progress)` | update, check, sync |
