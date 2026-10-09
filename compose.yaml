@@ -1,0 +1,90 @@
+# Infrastructure only (docs/architecture.md, section 14): the two services run on the host
+# with `pnpm start:dev <app>`. `docker compose up -d --wait` starts the databases, Redis and
+# RabbitMQ, and migrates both databases with Liquibase, test records included.
+name: fitness-platform
+
+services:
+  # PostgreSQL instance 1: Workout Tracking's own database
+  workout-tracking-db:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: workout_tracking
+      POSTGRES_USER: workout_tracking
+      POSTGRES_PASSWORD: workout_tracking
+    ports:
+      - '5433:5432'
+    volumes:
+      - workout-tracking-db:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U workout_tracking -d workout_tracking']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # PostgreSQL instance 2: Training Progress' own database (also holds Notifications' inbox)
+  training-progress-db:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: training_progress
+      POSTGRES_USER: training_progress
+      POSTGRES_PASSWORD: training_progress
+    ports:
+      - '5434:5432'
+    volumes:
+      - training-progress-db:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U training_progress -d training_progress']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Creates and updates Workout Tracking's schema; LIQUIBASE_CONTEXTS=none leaves out the test records.
+  workout-tracking-db-migrations:
+    image: liquibase/liquibase:4.33
+    depends_on:
+      workout-tracking-db:
+        condition: service_healthy
+    volumes:
+      - ./apps/workout-tracking/liquibase:/liquibase/changelog:ro
+    environment:
+      LIQUIBASE_SEARCH_PATH: /liquibase/changelog
+      LIQUIBASE_COMMAND_CHANGELOG_FILE: changelog.yaml
+      LIQUIBASE_COMMAND_URL: jdbc:postgresql://workout-tracking-db:5432/workout_tracking
+      LIQUIBASE_COMMAND_USERNAME: workout_tracking
+      LIQUIBASE_COMMAND_PASSWORD: workout_tracking
+      LIQUIBASE_COMMAND_CONTEXT_FILTER: ${LIQUIBASE_CONTEXTS:-test-data}
+    command: update
+    restart: 'no'
+
+  # Training Progress' cache (section 8)
+  redis:
+    image: redis:8-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Integration events between the services (section 7). Management UI on http://localhost:15672
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: fitness
+      RABBITMQ_DEFAULT_PASS: fitness
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+volumes:
+  workout-tracking-db:
+  training-progress-db:
+  rabbitmq:

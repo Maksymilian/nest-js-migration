@@ -1,8 +1,50 @@
 {
   "$schema": "https://json.schemastore.org/nest-cli",
   "collection": "@nestjs/schematics",
-  "sourceRoot": "src",
+  "sourceRoot": "apps/workout-tracking/src",
   "compilerOptions": {
-    "deleteOutDir": true
+    "deleteOutDir": true,
+    "builder": "rspack",
+    "tsConfigPath": "apps/workout-tracking/tsconfig.app.json"
+  },
+  "monorepo": true,
+  "root": "apps/workout-tracking",
+  "projects": {
+    "ddd": {
+      "type": "library",
+      "root": "libs/ddd",
+      "entryFile": "index",
+      "sourceRoot": "libs/ddd/src",
+      "compilerOptions": {
+        "tsConfigPath": "libs/ddd/tsconfig.lib.json"
+      }
+    },
+    "training-progress": {
+      "type": "application",
+      "root": "apps/training-progress",
+      "entryFile": "main",
+      "sourceRoot": "apps/training-progress/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/training-progress/tsconfig.app.json"
+      }
+    },
+    "workout-tracking": {
+      "type": "application",
+      "root": "apps/workout-tracking",
+      "entryFile": "main",
+      "sourceRoot": "apps/workout-tracking/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/workout-tracking/tsconfig.app.json"
+      }
+    },
+    "workout-tracking-contracts": {
+      "type": "library",
+      "root": "libs/workout-tracking-contracts",
+      "entryFile": "index",
+      "sourceRoot": "libs/workout-tracking-contracts/src",
+      "compilerOptions": {
+        "tsConfigPath": "libs/workout-tracking-contracts/tsconfig.lib.json"
+      }
+    }
   }
 }

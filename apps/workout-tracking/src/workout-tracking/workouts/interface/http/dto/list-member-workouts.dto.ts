@@ -1,0 +1,16 @@
+import { Type } from 'class-transformer';
+import { IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
+
+export class ListMemberWorkoutsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 20;
+
+  /** `nextCursor` of the previous page. */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z_[0-9a-f-]{36}$/)
+  cursor?: string;
+}

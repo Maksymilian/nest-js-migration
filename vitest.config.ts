@@ -1,13 +1,15 @@
-import { defineConfig } from 'vitest/config';
-import tsconfigPaths from 'vite-tsconfig-paths';
+import swc from 'unplugin-swc';
+import { configDefaults, defineConfig } from 'vitest/config';
+import { tsconfigAliases } from './vitest.aliases.js';
 
 export default defineConfig({
-  // Resolves the path aliases declared in tsconfig.json, including the ones
-  // added by `nest g library`.
-  plugins: [tsconfigPaths()],
+  // Builds the test files with SWC, which emits the decorator metadata Nest's DI needs (recipes/swc.md).
+  plugins: [swc.vite({ module: { type: 'es6' } })],
+  resolve: { alias: tsconfigAliases() },
   test: {
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
+    exclude: [...configDefaults.exclude, '.node_modules-root/**', 'dist/**'],
   },
 });

@@ -1,0 +1,4 @@
+allowBuilds:
+  '@apollo/protobufjs': false
+  '@swc/core': true
+  esbuild: true

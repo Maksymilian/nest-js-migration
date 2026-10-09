@@ -18,6 +18,32 @@
     "skipLibCheck": true,
     "strict": true,
     "strictPropertyInitialization": false,
-    "types": ["vitest/globals", "node"]
-  }
+    "types": [
+      "vitest/globals",
+      "node"
+    ],
+    "paths": {
+      "@app/ddd": [
+        "./libs/ddd/src/index.ts"
+      ],
+      "@app/ddd/*": [
+        "./libs/ddd/src/*"
+      ],
+      "@app/workout-tracking-contracts": [
+        "./libs/workout-tracking-contracts/src/index.ts"
+      ],
+      "@app/workout-tracking-contracts/*": [
+        "./libs/workout-tracking-contracts/src/*"
+      ]
+    }
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/workout-tracking/tsconfig.app.json"
+    },
+    {
+      "path": "./apps/training-progress/tsconfig.app.json"
+    }
+  ]
 }
