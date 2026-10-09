@@ -56,6 +56,24 @@ services:
     command: update
     restart: 'no'
 
+  # Creates and updates Training Progress' schema; LIQUIBASE_CONTEXTS=none leaves out the test records.
+  training-progress-db-migrations:
+    image: liquibase/liquibase:4.33
+    depends_on:
+      training-progress-db:
+        condition: service_healthy
+    volumes:
+      - ./apps/training-progress/liquibase:/liquibase/changelog:ro
+    environment:
+      LIQUIBASE_SEARCH_PATH: /liquibase/changelog
+      LIQUIBASE_COMMAND_CHANGELOG_FILE: changelog.yaml
+      LIQUIBASE_COMMAND_URL: jdbc:postgresql://training-progress-db:5432/training_progress
+      LIQUIBASE_COMMAND_USERNAME: training_progress
+      LIQUIBASE_COMMAND_PASSWORD: training_progress
+      LIQUIBASE_COMMAND_CONTEXT_FILTER: ${LIQUIBASE_CONTEXTS:-test-data}
+    command: update
+    restart: 'no'
+
   # Training Progress' cache (section 8)
   redis:
     image: redis:8-alpine
@@ -70,14 +88,14 @@ services:
   # Integration events between the services (section 7). Management UI on http://localhost:15672
   rabbitmq:
     image: rabbitmq:4-management-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: fitness
-      RABBITMQ_DEFAULT_PASS: fitness
+    # The user (fitness/fitness) and the topology of section 7.2 come from the definitions file.
     ports:
       - '5672:5672'
       - '15672:15672'
     volumes:
       - rabbitmq:/var/lib/rabbitmq
+      - ./infrastructure/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-definitions.conf:ro
+      - ./infrastructure/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 5s

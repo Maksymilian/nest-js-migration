@@ -25,7 +25,11 @@
       "entryFile": "main",
       "sourceRoot": "apps/training-progress/src",
       "compilerOptions": {
-        "tsConfigPath": "apps/training-progress/tsconfig.app.json"
+        "tsConfigPath": "apps/training-progress/tsconfig.app.json",
+        "assets": [
+          "notifications/templates/**/*"
+        ],
+        "watchAssets": true
       }
     },
     "workout-tracking": {

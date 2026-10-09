@@ -1,0 +1,7 @@
+<p>Hi {{ name }},</p>
+<p>you set a new personal record for <strong>{{ metric }}</strong> in {{ discipline }}: <strong>{{ value }}</strong>, on {{ date }}.</p>
+{{#if previous}}
+<p>Your previous record was {{ previous }}.</p>
+{{else}}
+<p>It's your first record in {{ discipline }}.</p>
+{{/if}}
