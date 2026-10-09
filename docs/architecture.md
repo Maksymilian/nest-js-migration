@@ -1,14 +1,14 @@
 # Architecture proposal: fitness platform
 
-**Status:** proposal, 2026-10-08. Nothing below is implemented yet.
+**Status:** implemented, 2026-10-09 (proposed 2026-10-08). Where the implementation settled an open point, this document says so.
 
 The vocabulary used here is defined in [the ubiquitous language](ubiquitous-language.md). Implementation follows the NestJS docs cached in [`docs/nestjs/`](nestjs/); each section links to the page it's based on.
 
 ## 1. Scope
 
-**In scope:** two NestJS microservices in one Nest CLI monorepo; a separate PostgreSQL instance for each; domain events and integration events through the transactional outbox, with RabbitMQ between the services; Redis caching; Terminus health checks; validation on every boundary; DDD, strategic and tactical.
+**In scope:** two NestJS microservices in one Nest CLI monorepo; a separate PostgreSQL instance for each; domain events and integration events through the transactional outbox, with RabbitMQ between the services; Redis caching; Terminus health checks; validation on every boundary; DDD, strategic and tactical. Infrastructure for development (both PostgreSQL instances, Redis, RabbitMQ) runs in Docker Compose, and Liquibase, also run from Compose, creates and updates both schemas.
 
-**Out of scope for now, on purpose:** authentication and authorization, SQS/SNS, Docker images, Terraform, and monitoring (metrics, tracing, alerting). Where a design decision depends on one of them, this document says so.
+**Out of scope for now, on purpose:** authentication and authorization, SQS/SNS, Docker images of the services, Terraform, and monitoring (metrics, tracing, alerting). Where a design decision depends on one of them, this document says so.
 
 ## 2. Strategic design
 
@@ -20,7 +20,7 @@ The vocabulary used here is defined in [the ubiquitous language](ubiquitous-lang
 | **Workout Tracking**: equipment, pairing, recording workouts, corrections, voids | **Supporting** | Necessary and specific to us, but members don't choose us because we can store numbers from a bike. | Built in-house but kept simple: two small aggregates with clear invariants, no in-process policies. |
 | **Notifications**: telling members about achievements | **Generic** | Every product sends mail; nothing about it is ours. | **Built now from an off-the-shelf library**: `@nestjs/mail` ([`application/mail.md`](nestjs/application/mail.md)). No domain model, only templates and a reaction to Training Progress' published language. |
 | **Calendar**: ISO weeks, months, years, period boundaries | **Generic** | A solved problem, and an easy one to get subtly wrong. | **Built now from a library**: `date-fns`, used inside the `TrainingPeriod` value object. No hand-written week arithmetic. |
-| **Identity & Access** | **Generic** | A solved problem. | Later: an identity provider (Auth0). Until then `memberId` is passed explicitly, and Notifications gets contact addresses through a port with a development adapter. |
+| **Identity & Access** | **Generic** | A solved problem. | Later: an identity provider (Auth0). Until then `memberId` is passed explicitly and is the member's email address (not verified), and Notifications gets contact addresses through a port with a development adapter. |
 | **Billing & Subscriptions** | **Generic** | A solved problem. | Out of scope. Buy (for example Stripe). |
 
 The effort follows the classification: the core domain gets the full tactical toolset (section 3), the supporting domain a lean version of it, and generic subdomains no domain model at all, only a library behind a port.
@@ -300,9 +300,11 @@ Malformed input is a `400` from `ValidationPipe` on every route. Responses are r
 | Table | Columns | Constraints and indexes |
 |---|---|---|
 | `equipment` | `id`, `serial_number`, `type`, `paired_member_id` (nullable), `paired_at`, `registered_at`, `version` | unique `serial_number` |
-| `workouts` | `id`, `equipment_id`, `recording_id`, `member_id`, `discipline`, `started_at`, `duration_seconds`, `distance_meters`, `calories`, `status`, `revision`, `void_reason`, `voided_at`, `recorded_at` | unique `(equipment_id, recording_id)`; index `(member_id, started_at desc, id desc)` |
+| `workouts` | `id`, `equipment_id`, `equipment_type` (kept for the published snapshot), `recording_id`, `member_id`, `discipline`, `started_at`, `duration_seconds`, `distance_meters`, `calories`, `status`, `revision`, `void_reason`, `voided_at`, `recorded_at` | unique `(equipment_id, recording_id)`; index `(member_id, started_at desc, id desc)` |
 | `workout_corrections` | `workout_id`, `revision`, previous and new metrics, `reason`, `corrected_at` | primary key `(workout_id, revision)`. Audit trail |
-| `nest_outbox.*` | Owned and migrated by `PostgresOutboxStore` | |
+| `nest_outbox.*` | The outbox store's tables, created by Liquibase from `nest-outbox sql` (changeset 0002); the store runs with `migrate: false` | |
+
+**Migrations:** Liquibase, formatted SQL changelogs in `apps/workout-tracking/liquibase` (master `changelog.yaml`), run by the `workout-tracking-db-migrations` service in Docker Compose. Test records are changesets with `context:test-data`. The Drizzle schema in `platform/database/schema.ts` mirrors the changesets and is only used to build queries. The e2e tests apply the same changesets to PGlite: formatted SQL is plain SQL with comments.
 
 ### 5.4 Published language (`libs/workout-tracking-contracts`)
 
@@ -345,6 +347,7 @@ The envelope is `@nestjs/outbox`'s `OutboxEnvelope`; `id` is the domain event's 
 - `LoggedWorkout.log(...)` → `WorkoutLogged`.
 - `revise(metrics, sourceRevision)` → `LoggedWorkoutRevised`; `stopCounting(sourceRevision)` → `LoggedWorkoutStoppedCounting`.
 - **Source revision guard:** a change whose source revision isn't newer than the stored one is ignored and raises nothing. This protects against reordering, on top of the inbox protecting against redelivery.
+- `LoggedWorkout.logStoppedCounting(...)`: a void that overtook its recording logs the workout as not counting, raising nothing (the member's training log doesn't change). Without it, the late recording would log it as counting.
 
 **`PersonalRecords`** (aggregate root, one per member and discipline): holds a `PersonalRecord` **value object** per record metric (value, logged workout, set at), replaced as a whole when it changes.
 - **Why this boundary:** the three records of a discipline have no invariant between them, so strictly each could be its own aggregate. They're kept together because every change considers or recalculates all three from the same logged workout, only that member's events ever write them (no contention), and one transaction per event keeps the policy exactly-once with the inbox. Splitting them would triple the transactions without protecting anything more.
@@ -370,7 +373,7 @@ Policies are application-layer handlers: they load one aggregate, call one metho
 | Policy | Listens to | Does |
 |---|---|---|
 | Keep Personal Records | `WorkoutLogged` | `consider()` on the member's `PersonalRecords` for that discipline |
-| | `LoggedWorkoutRevised`, `LoggedWorkoutStoppedCounting` | Reads the record candidates from the training log, then `recalculate()` on the member's `PersonalRecords` for that discipline |
+| | `LoggedWorkoutRevised`, `LoggedWorkoutStoppedCounting` | Reads the record candidates from the training log through the same transaction (ties go to the current holders), then `recalculate()` on the member's `PersonalRecords` for that discipline |
 | Check Goal Achievement | `WorkoutLogged`, `LoggedWorkoutRevised` | Loads the member's `Active` goals; for each goal whose `progressCriteria().isMetBy(discipline, startedAt)` is true, in its own transaction: sum the training log for `progressCriteria()`, then `recordProgress()`. The decision which goals are affected stays in the domain |
 | | `TrainingGoalSet` | The same for the new goal, because workouts already in its period count |
 | Miss Ended Goals (scheduled, daily, [`application/task-scheduling.md`](nestjs/application/task-scheduling.md)) | | `miss()` on each `Active` goal past its grace period, each in its own transaction |
@@ -380,7 +383,7 @@ Policies are application-layer handlers: they load one aggregate, call one metho
 - A separate bounded context, hosted as a module in `training-progress`. It handles Training Progress' published language with two `@OnOutboxMessage()` handlers: **Notify Personal Record** (`training-progress.integration.personal-record-set.v1`) and **Notify Goal Achieved** (`training-progress.integration.goal-achieved.v1`). It never imports Training Progress' domain.
 - It follows the mail docs' "Send after the order commits" section: `idempotencyKey: message.id`, `signal: ctx.signal`, `retry: false` (the outbox retries), and permanent mail errors become `NonRetryableMessageError`.
 - No domain model, on purpose: mail classes render templates from the event payload.
-- Recipients come from a `MemberContactDirectory` port. Until Identity exists, its adapter derives a development address from configuration; later it reads the identity provider.
+- Recipients come from a `MemberContactDirectory` port. Until Identity exists, a member id is the member's email address, so its development adapter uses it as the address; later it reads the identity provider.
 - Transport: `FileMailTransport` in development (writes `.eml` files, no mail server needed), SMTP or Resend in production, chosen from the environment.
 
 ### 6.4 GraphQL API (external)
@@ -481,7 +484,9 @@ These types are client representations built from read models and command result
 | `logged_workouts` | `id` (= upstream `WorkoutId`), `member_id`, `discipline`, `started_at`, `duration_seconds`, `distance_meters`, `calories`, `counts`, `source_revision` (also the optimistic-lock check), `logged_at` | index `(member_id, started_at desc, id desc) where counts` |
 | `personal_records` | `member_id`, `discipline`, and per record metric its value, logged workout and set-at time (`longest_distance_meters`, `longest_distance_logged_workout_id`, `longest_distance_set_at`, ...), `version` | primary key `(member_id, discipline)`: one row per `PersonalRecords` aggregate |
 | `training_goals` | `id`, `member_id`, `metric`, `target`, `discipline` (nullable), `starts_on`, `ends_on`, `status`, `set_at`, `achieved_at`, `missed_at`, `abandoned_at`, `version` | index `(member_id, status)` |
-| `nest_outbox.*` | Domain event messages, dead letters and inboxes, owned and migrated by `PostgresOutboxStore` | |
+| `nest_outbox.*` | Domain event messages, dead letters and inboxes; created by Liquibase from `nest-outbox sql`, the store runs with `migrate: false` | |
+
+**Migrations:** Liquibase changelogs in `apps/training-progress/liquibase`, run by the `training-progress-db-migrations` service in Docker Compose, as for Workout Tracking (section 5.3). Test records: an active goal each for Ada and Grace.
 
 ## 7. Integration between the services: RabbitMQ
 
@@ -492,7 +497,7 @@ Based on [`microservices/rabbitmq.md`](nestjs/microservices/rabbitmq.md) and [`f
 - `OutboxModule.forRootAsync()` with `PostgresOutboxStore` (`fromDrizzle(db)`) and a `ClientProxyTransport` over a RabbitMQ `ClientsModule` client. `route` sends `*.integration.*` topics to RabbitMQ.
 - The relay runs in every instance; leases and `SKIP LOCKED` keep instances from publishing the same message in parallel.
 - `retry`: the package default of 20 attempts (about 30–60 minutes), so an ordinary broker outage doesn't dead-letter events. Dead letters are inspected and requeued with `OutboxDeadLetters` through an internal admin route.
-- **Broker acknowledgement:** the outbox docs warn that only a broker that confirms receipt ("RabbitMQ with publisher confirms") makes "published" mean "stored by the broker". First check whether Nest's RMQ `ClientProxy` waits for confirms. If not, write a small custom `OutboxTransport` that publishes on an `amqp-connection-manager` confirm channel. Messages are `persistent`; exchanges and queues are durable.
+- **Broker acknowledgement (settled):** Nest's `ClientRMQ` publishes through an `amqp-connection-manager` channel wrapper, which is a confirm channel by default, and `dispatchEvent()` resolves only in the publish callback: the outbox counts a message as published once the broker confirmed it. No custom `OutboxTransport` is needed. Messages are `persistent`; exchanges and queues are durable.
 
 ### 7.2 Topology
 
@@ -502,7 +507,7 @@ Based on [`microservices/rabbitmq.md`](nestjs/microservices/rabbitmq.md) and [`f
 | Queue `training-progress.workout-tracking` | quorum, durable, bound to `workout-tracking.integration.#`; `x-single-active-consumer: true`; `x-delivery-limit: 5`; dead-letters to `training-progress.dlx` |
 | Queue `training-progress.workout-tracking.dlq` | bound to `training-progress.dlx`; inspected and replayed by hand |
 
-The exchange lets future consumers bind their own queues without changes to Workout Tracking (the RMQ transport's `exchange`, `exchangeType` and `wildcards` options).
+The topology is declared before any service starts, from `infrastructure/rabbitmq/definitions.json`, which Docker Compose loads into RabbitMQ: an integration event published before Training Progress ever ran would otherwise reach an exchange without a queue, and be lost. The services declare the same objects with the same arguments (Training Progress' RMQ server asserts its queue and binding, a `DeadLetterTopology` provider the DLX and DLQ). The exchange lets future consumers bind their own queues without changes to Workout Tracking (the RMQ transport's `exchange`, `exchangeType` and `wildcards` options).
 
 ### 7.3 Consumer: Training Progress' anticorruption layer
 
@@ -511,10 +516,11 @@ The exchange lets future consumers bind their own queues without changes to Work
 - For each message, the ACL:
   1. validates the payload against the contract class;
   2. **translates** it into this context's language: `workout-recorded.v1` → *Log Workout*, `workout-corrected.v1` → *Revise Logged Workout*, `workout-voided.v1` → *Stop Counting Logged Workout*;
-  3. dispatches the command, whose handler runs in one transaction with `OutboxInbox.processInTransaction(tx, 'training-progress', envelope.id, ...)`: inbox record, `LoggedWorkout` change and its domain events commit together;
+  3. dispatches the command, whose handler runs in one transaction with `OutboxInbox.processInTransaction(tx, 'training-progress', envelope.id, ...)` (`Transactions.runOnce()`): inbox record, `LoggedWorkout` change and its domain events commit together;
   4. acks.
 - **Failures:** an invalid payload is nacked without requeue and goes to the DLQ. Any other error is nacked with requeue, and RabbitMQ dead-letters it after `x-delivery-limit` deliveries.
 - **Ordering:** the single active consumer keeps the queue order across instances (the others are hot standbys), and inside the process each key's messages are handled one at a time, as in the outbox docs' analytics controller. The source revision guard is the safety net.
+- **Out of order anyway** (a redelivery after a nack goes back to the queue): every integration event carries the whole workout, so the handlers don't depend on order. A recording of a workout already logged changes nothing; a correction of a workout not logged yet logs it with the corrected metrics; a void of one not logged yet logs it as not counting (`logStoppedCounting`). The source revision guard ignores whatever is older.
 - Training Progress' own outbox (relay **enabled**, `local` transport only) carries its domain events to its policies, and its published language to Notifications. A daily job prunes inboxes with `inbox.prune('30d')`.
 
 ### 7.4 Delivery guarantees
@@ -619,13 +625,19 @@ apps/
     platform/                          database, outbox setup + DomainEventPublisher + route table, cache
                                        (incl. the invalidation handler), GraphQL error mapping, health
 libs/
-  ddd/                                 AggregateRoot, DomainEvent, DomainError (technical, no domain concepts)
-  workout-tracking-contracts/          Workout Tracking's published language: topics and payload classes
+  ddd/                                 AggregateRoot, DomainEvent, DomainError, ConcurrencyConflict, Transaction, generateId
+                                       (technical, no domain concepts)
+  workout-tracking-contracts/          Workout Tracking's published language: topics, exchange and payload classes
+infrastructure/rabbitmq/               definitions.json (user, exchanges, queues, bindings of section 7.2), rabbitmq.conf
+postman/                               workout-tracking (REST) and training-progress (GraphQL) collections
+compose.yaml                           PostgreSQL x2, Redis, RabbitMQ, Liquibase migrations
 ```
 
+Each app also has `liquibase/` (its schema), `test/` (e2e on PGlite with the changesets) and `.env.example`.
+
 Layer rules (enforced by the architecture check, section 11.1):
-- `domain/` imports nothing from NestJS, Drizzle, `@nestjs/outbox` or other layers. Pure libraries for generic subdomains (`date-fns`) and `libs/ddd` are allowed. Aggregates are unit-tested without Nest.
-- `application/` holds command and query handlers, policies, and ports (`DomainEventPublisher`, read ports such as the training log totals). Repository ports belong to `domain/`. The application layer opens transactions.
+- `domain/` imports nothing from NestJS, Drizzle, `@nestjs/outbox` or other layers. Pure libraries for generic subdomains (`date-fns`, `@date-fns/utc`) and `libs/ddd` are allowed. Aggregates are unit-tested without Nest.
+- `application/` holds command and query handlers, policies, and read ports (such as the training log totals). Repository ports belong to `domain/`. The application layer opens transactions, through `platform/`'s `Transactions` (`run()`, and `runOnce()` with the inbox), and stages events through `platform/`'s `DomainEventPublisher` port.
 - `infrastructure/` implements the ports with Drizzle and the outbox, and maps rows to aggregates.
 - `interface/` (controllers, resolvers, message handlers) validates input, dispatches a command or query, and maps the result.
 
@@ -637,10 +649,10 @@ Context, aggregate and layer boundaries are enforced in code, not only in diagra
 |---|---|---|
 | `no-import-from-another-service` | Any import from `apps/A/` into `apps/B/` | Each core or supporting context is its own service |
 | `context-sees-other-contexts-only-through-published-language` | Inside one app, a context folder importing another context folder, except its `published-language/`. `platform/` and the composition root (`app.module.ts`) may import every context | Notifications sees only Training Progress' published language |
-| `contracts-only-in-published-language-or-acl` | Importing `libs/workout-tracking-contracts` anywhere except Workout Tracking's `published-language/` and Training Progress' `workout-tracking-acl/` | Contract classes never reach a domain model |
+| `contracts-only-in-published-language-or-acl` | Importing `libs/workout-tracking-contracts` anywhere except Workout Tracking's `published-language/`, Training Progress' `workout-tracking-acl/` and the e2e tests | Contract classes never reach a domain model |
 | `libs-only-through-their-entry-point` | Deep imports such as `@app/ddd/aggregate-root.js`; only `@app/<lib>` (its `src/index.ts`) | Libraries have a public API. The Nest library schematic also adds an `@app/<lib>/*` alias, which this rule neutralizes |
 | `libs-import-no-app-and-no-other-lib` | `libs/*` importing `apps/*` or another lib | No domain classes in `libs/` |
-| `domain-depends-only-on-domain-libs-ddd-and-pure-libraries` | `domain/` importing anything except `domain/` folders (as limited below), `libs/ddd`, and an allow-list of pure libraries (`date-fns`) | Domain is framework-free: no NestJS, Drizzle, `@nestjs/outbox`, contracts, `application/`, `infrastructure/`, `interface/` or `platform/`. An allow-list, so a new package is rejected until it's added on purpose |
+| `domain-depends-only-on-domain-libs-ddd-and-pure-libraries` | `domain/` importing anything except `domain/` folders (as limited below), `libs/ddd`, and an allow-list of pure libraries (`date-fns`, `@date-fns/utc`) | Domain is framework-free: no NestJS, Drizzle, `@nestjs/outbox`, contracts, `application/`, `infrastructure/`, `interface/` or `platform/`. An allow-list, so a new package is rejected until it's added on purpose |
 | `application-imports-no-infrastructure-or-interface` | `application/` importing `infrastructure/` or `interface/` | Dependencies point inward |
 | `infrastructure-imports-no-interface` | `infrastructure/` importing `interface/` | Dependencies point inward |
 | `domain-sees-other-modules-only-through-values` | A module's `domain/` importing another module's `domain/` outside `domain/values/` | Strict aggregate isolation: roots, entities, repositories, events and errors stay private; other aggregates are referenced by id |
@@ -650,13 +662,14 @@ Context, aggregate and layer boundaries are enforced in code, not only in diagra
 
 What isn't restricted, on purpose: `application/` and `interface/` may import other modules of the same context (a use case may read one aggregate to change another; a policy handles another module's domain events; the `members` resolver composes queries). One aggregate per transaction is checked in review and in tests, not by the import graph. `interface/` may import `domain/values/` to build commands (the ACL builds `LoggedWorkoutId`, `Discipline` and so on).
 
-**Not adopted, on purpose:** a package per bounded context (pnpm workspace packages with `exports`) and TypeScript project references. Here the context boundary is already a service boundary (one Nest app per core or supporting context), and Nest CLI monorepo mode, which this project uses, composes `apps/` and `libs/` through `tsconfig` `paths` and builds each app with its own builder. oxlint's `no-restricted-imports` was considered and rejected: it matches import strings instead of resolved files, and when two `overrides` match a file, the later one replaces the earlier one's rule options, so a context rule and a layer rule can't both apply to the same file (checked with oxlint 1.87).
+**Not adopted, on purpose:** a package per bounded context (pnpm workspace packages with `exports`), and TypeScript project references beyond the solution-style root `tsconfig.json` that `nest generate app` writes (each app is still built by the Nest CLI, not with `tsc -b`). Here the context boundary is already a service boundary (one Nest app per core or supporting context), and Nest CLI monorepo mode, which this project uses, composes `apps/` and `libs/` through `tsconfig` `paths` and builds each app with its own builder. oxlint's `no-restricted-imports` was considered and rejected: it matches import strings instead of resolved files, and when two `overrides` match a file, the later one replaces the earlier one's rule options, so a context rule and a layer rule can't both apply to the same file (checked with oxlint 1.87).
 
 ## 12. Technology choices
 
 | Concern | Choice | Why |
 |---|---|---|
 | ORM | Drizzle through `@nestjs/drizzle` ([`data/drizzle.md`](nestjs/data/drizzle.md)) | The outbox tutorial's primary setup (`fromDrizzle`); the schema lives in plain TypeScript, which keeps persistence out of the domain classes. Cost: a small custom Terminus indicator |
+| Migrations | Liquibase 4.33 (Docker image), formatted SQL changelogs | Requested for creating and updating the schemas and adding test records from Docker Compose. Owns all DDL, the outbox store's schema included; drizzle-kit isn't used |
 | Domain events, integration events, inboxes | `@nestjs/outbox` with `PostgresOutboxStore` | Official package: transactional writes, local handlers, retries, dead letters, per-key ordering, inboxes |
 | Commands and queries | `@nestjs/cqrs` (`CommandBus`, `QueryBus` only) | Official recipe; one handler per use case |
 | GraphQL | `@nestjs/graphql` with `@nestjs/apollo`, code first | Official integration |
@@ -669,9 +682,11 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Configuration | `@nestjs/config` | Official recipe |
 | Scheduled jobs | `@nestjs/schedule` | Missing ended goals; pruning inboxes |
 | Architecture check | `dependency-cruiser`, run with pnpm | The Nest docs have no recipe for import boundaries. It checks the resolved import graph (including `.js` → `.ts` under `nodenext` and the `@app/*` aliases), and its rules compose, which oxlint's overrides don't (section 11.1) |
-| Tests | Vitest (already in the template) | Aggregate tests as given/when/then on domain events; policy and ACL tests; e2e tests against real PostgreSQL, as in the outbox docs' Testing section |
+| Tests | Vitest with SWC (`unplugin-swc`, [`recipes/swc.md`](nestjs/recipes/swc.md)), PGlite | Aggregate tests as given/when/then on domain events; ACL, cache and filter tests; e2e tests per service on PGlite with the Liquibase changesets, the relay driven with `runOnce()`, as in the outbox docs' Testing section |
+| Build | Nest CLI monorepo with Rspack (the monorepo default) | One bundle per service in `dist/apps/<service>/main.js`; mail templates copied as CLI assets |
+| API collections | Postman: `postman/workout-tracking.postman_collection.json` (REST), `postman/training-progress.postman_collection.json` (GraphQL) | Every request checks its status code; both run green with newman against the Compose setup |
 
-## 13. Implementation plan
+## 13. Implementation plan (done)
 
 Every building block is generated with the Nest CLI (see `CLAUDE.md`). Each milestone ends with passing tests and its own commit.
 
@@ -683,17 +698,18 @@ Every building block is generated with the Nest CLI (see `CLAUDE.md`). Each mile
 6. **Training Progress: personal records, progress summary, streak, Redis.** The `PersonalRecords` aggregate and its policy, the read models, cache-aside, invalidation through domain events. Tests: each policy is idempotent; Redis down still answers.
 7. **Training Progress: training goals.** The `TrainingGoal` aggregate and its progress criteria, mutations, the Check Goal Achievement policy, the daily jobs.
 8. **Notifications (generic).** Training Progress' published language for it, `@nestjs/mail` with `FileMailTransport`, the two handlers, `MemberContactDirectory` with its development adapter.
-9. **Health checks in both apps** (`nest generate module health`, `nest generate controller health`, custom indicators), graceful shutdown, and an updated Postman collection: the Workout Tracking REST API plus Training Progress GraphQL requests, replacing the template's `GET /`.
+9. **Health checks in both apps** (`nest generate module health`, `nest generate controller health`, custom indicators), graceful shutdown, and two Postman collections: Workout Tracking's REST API and Training Progress' GraphQL API.
+10. **Infrastructure and migrations.** Docker Compose for both PostgreSQL instances, Redis and RabbitMQ (with its topology from a definitions file), and Liquibase changelogs per service, with test records.
 
 ## 14. Assumptions and open questions
 
 | # | Topic | Assumption until decided |
 |---|---|---|
-| 1 | Running PostgreSQL ×2, Redis and RabbitMQ locally | Dockerization is out of scope, so they run outside this repo. A `docker-compose.yml` for **infrastructure only** would make setup one command. Your call |
+| 1 | Running PostgreSQL ×2, Redis and RabbitMQ locally | **Decided:** `compose.yaml` runs the infrastructure only (the services run on the host), and Liquibase migrates both databases from it, with test records |
 | 2 | Time zones | Training periods, active days and streaks use UTC. Real members expect their own time zone; that needs a member time zone, which needs Identity |
 | 3 | Achievements vs records | Achievements are final; personal records are recalculated and can go down |
 | 4 | Goal grace period | One day after the goal period ends, so late recordings still count |
 | 5 | Pairing | Pairing equipment that's paired with another member is refused; it must be unpaired first |
-| 6 | Member contacts | Notifications uses a development adapter for addresses until Identity exists |
-| 7 | Publisher confirms | Verified against Nest's RMQ client in milestone 4; a custom `OutboxTransport` if needed |
-| 8 | Template leftovers | The template's `@nestjs/observe` instrumentation, `@nestjs/mau` deploy script and `GET /` controller are removed in milestone 1 |
+| 6 | Member contacts | **Decided:** until Identity exists, a member id is the member's email address, not verified; Notifications' development adapter sends to it |
+| 7 | Publisher confirms | **Settled:** Nest's RMQ client waits for publisher confirms (section 7.1) |
+| 8 | Template leftovers | **Done:** `@nestjs/observe`, `@nestjs/mau` and the `GET /` controller are gone |

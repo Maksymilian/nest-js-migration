@@ -12,7 +12,7 @@ These terms mean the same thing everywhere, but there is no shared code: each co
 
 | Term | Meaning | Code | Don't say |
 |---|---|---|---|
-| **Member** | A person with an account on the platform who trains. | `MemberId` value object in each context, holding the identity provider's subject id (an opaque string) | user, customer, client, athlete |
+| **Member** | A person with an account on the platform who trains. | `MemberId` value object in each context, holding the identity provider's subject id (an opaque string). Until Identity exists, that is the member's email address, not verified | user, customer, client, athlete |
 | **Discipline** | The kind of exercise a workout is: `Cycling`, `Running`, `Walking`, `Rowing`. | `Discipline`, defined separately by each context; integration events carry it as a string that the receiving context translates | type, sport, activity type, exercise |
 
 ## Workout Tracking context (supporting subdomain)
@@ -50,7 +50,7 @@ In this context, "workout" on its own always means a **logged workout** (as in "
 |---|---|---|---|
 | **Training Log** | A member's counting workouts in chronological order, newest first. What the member app shows as their history. | `TrainingLog` (read model), `trainingLog` GraphQL field | history, feed, timeline, activity list |
 | **Logged Workout** | This context's own model of a workout from Workout Tracking: discipline, started at, metrics. Changed only through the anticorruption layer. | `LoggedWorkout` aggregate, `LoggedWorkoutId` (the same value as the upstream WorkoutId) | workout record, activity, entry |
-| **Log a Workout** | Add a workout to the member's training log. What a recording upstream becomes here. | `LoggedWorkout.log()`, `WorkoutLogged` | import, sync, create |
+| **Log a Workout** | Add a workout to the member's training log. What a recording upstream becomes here. A workout whose void arrived before its recording is logged as not counting, which changes nothing in the training log. | `LoggedWorkout.log()`, `WorkoutLogged`; `LoggedWorkout.logStoppedCounting()` | import, sync, create |
 | **Workout Metrics** | What a logged workout measured: duration, distance, calories. This context's own value objects, defined separately from Workout Tracking's, as with Discipline. | `WorkoutMetrics`, `Duration`, `Distance`, `Calories` value objects | stats, data, values |
 | **Revise** | Replace a logged workout's metrics. What a correction upstream becomes here. | `LoggedWorkout.revise()`, `LoggedWorkoutRevised` | update, correct, edit |
 | **Stop Counting** | Keep a logged workout but exclude it from everything. What a void upstream becomes here. | `LoggedWorkout.stopCounting()`, `LoggedWorkoutStoppedCounting` | delete, void, remove |
@@ -112,7 +112,7 @@ No domain model; a thin layer over `@nestjs/mail`. It conforms to Training Progr
 | Term | Meaning | Code | Don't say |
 |---|---|---|---|
 | **Notification** | A message telling a member about their progress. Sent by email for now. | `*Mail` classes | alert, message, push |
-| **Member Contact** | Where a member is reached: name and email address. Translated from the identity provider's user profile by the `MemberContactDirectory` adapter (a development adapter until the provider exists). | `MemberContact`, `MemberContactDirectory` port | profile, user details |
+| **Member Contact** | Where a member is reached: name and email address. Translated from the identity provider's user profile by the `MemberContactDirectory` adapter. Until the provider exists, a development adapter uses the member id, an email address. | `MemberContact`, `MemberContactDirectory` port | profile, user details |
 | **Notify Personal Record** | Send a notification when a personal record is set. | `NotifyPersonalRecordHandler` | |
 | **Notify Goal Achieved** | Send a notification when a training goal is achieved. | `NotifyGoalAchievedHandler` | |
 
