@@ -1,6 +1,6 @@
 # Infrastructure only (docs/architecture.md, section 14): the two services run on the host
 # with `pnpm start:dev <app>`. `docker compose up -d --wait` starts the databases, Redis and
-# RabbitMQ, and migrates both databases with Liquibase, test records included.
+# RabbitMQ. Liquibase isn't part of it: scripts/database/liquibase.sh migrates the databases.
 name: fitness-platform
 
 services:
@@ -37,42 +37,6 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-
-  # Creates and updates Workout Tracking's schema; LIQUIBASE_CONTEXTS=none leaves out the test records.
-  workout-tracking-db-migrations:
-    image: liquibase/liquibase:4.33
-    depends_on:
-      workout-tracking-db:
-        condition: service_healthy
-    volumes:
-      - ./apps/workout-tracking/liquibase:/liquibase/changelog:ro
-    environment:
-      LIQUIBASE_SEARCH_PATH: /liquibase/changelog
-      LIQUIBASE_COMMAND_CHANGELOG_FILE: changelog.yaml
-      LIQUIBASE_COMMAND_URL: jdbc:postgresql://workout-tracking-db:5432/workout_tracking
-      LIQUIBASE_COMMAND_USERNAME: workout_tracking
-      LIQUIBASE_COMMAND_PASSWORD: workout_tracking
-      LIQUIBASE_COMMAND_CONTEXT_FILTER: ${LIQUIBASE_CONTEXTS:-test-data}
-    command: update
-    restart: 'no'
-
-  # Creates and updates Training Progress' schema; LIQUIBASE_CONTEXTS=none leaves out the test records.
-  training-progress-db-migrations:
-    image: liquibase/liquibase:4.33
-    depends_on:
-      training-progress-db:
-        condition: service_healthy
-    volumes:
-      - ./apps/training-progress/liquibase:/liquibase/changelog:ro
-    environment:
-      LIQUIBASE_SEARCH_PATH: /liquibase/changelog
-      LIQUIBASE_COMMAND_CHANGELOG_FILE: changelog.yaml
-      LIQUIBASE_COMMAND_URL: jdbc:postgresql://training-progress-db:5432/training_progress
-      LIQUIBASE_COMMAND_USERNAME: training_progress
-      LIQUIBASE_COMMAND_PASSWORD: training_progress
-      LIQUIBASE_COMMAND_CONTEXT_FILTER: ${LIQUIBASE_CONTEXTS:-test-data}
-    command: update
-    restart: 'no'
 
   # Training Progress' cache (section 8)
   redis:

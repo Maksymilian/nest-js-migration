@@ -4,11 +4,13 @@ import { type AmqpConnectionManager, connect } from 'amqp-connection-manager';
 import type { ConfirmChannel } from 'amqplib';
 import { WorkoutTrackingSubscription } from '../../training-progress/workout-tracking-acl/subscription.js';
 import type { Environment } from '../config/environment.js';
+import { ScheduleTriggers } from './schedule-triggers.js';
 
 /**
- * Declares where the subscription's dead letters go: the `training-progress.dlx` exchange and the
- * DLQ bound to it, inspected and replayed by hand. Declared again on every reconnect, in the
- * background: a broker that is down doesn't stop the service from starting.
+ * Declares where dead letters go, inspected and replayed by hand: the subscription's to the
+ * `training-progress.dlx` exchange and the DLQ bound to it, the schedule triggers' to their own DLQ.
+ * Declared again on every reconnect, in the background: a broker that is down doesn't stop the
+ * service from starting.
  */
 @Injectable()
 export class DeadLetterTopology implements OnModuleInit, OnApplicationShutdown {
@@ -26,6 +28,7 @@ export class DeadLetterTopology implements OnModuleInit, OnApplicationShutdown {
         await channel.assertExchange(deadLetterExchange, 'fanout', { durable: true });
         await channel.assertQueue(deadLetterQueue, { durable: true, arguments: { 'x-queue-type': 'quorum' } });
         await channel.bindQueue(deadLetterQueue, deadLetterExchange, '');
+        await channel.assertQueue(ScheduleTriggers.deadLetterQueue, { durable: true, arguments: { 'x-queue-type': 'quorum' } });
       },
     });
   }

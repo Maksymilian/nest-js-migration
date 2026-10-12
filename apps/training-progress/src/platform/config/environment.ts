@@ -1,5 +1,5 @@
 import { plainToInstance } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Max, Min, MinLength, validateSync } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min, MinLength, validateSync } from 'class-validator';
 
 /** Training Progress' environment variables. The service doesn't start without valid ones. */
 export class Environment {
@@ -55,6 +55,28 @@ export class Environment {
   @IsOptional()
   @IsString()
   RESEND_API_KEY?: string;
+
+  /** From @BotFather. Unset or empty, the Telegram bot is off. */
+  @IsOptional()
+  @IsString()
+  TELEGRAM_BOT_TOKEN?: string;
+
+  /**
+   * How Telegram's updates arrive: `polling` (development: one instance asks Telegram for them) or
+   * `webhook` (production: Telegram posts them to TELEGRAM_WEBHOOK_URL, to any instance).
+   */
+  @IsIn(['polling', 'webhook'])
+  TELEGRAM_UPDATES: 'polling' | 'webhook' = 'polling';
+
+  /** Required with TELEGRAM_UPDATES=webhook: the public HTTPS URL of `POST /telegram/updates`. */
+  @IsOptional()
+  @IsUrl({ protocols: ['https'], require_protocol: true, require_tld: false })
+  TELEGRAM_WEBHOOK_URL?: string;
+
+  /** Required with TELEGRAM_UPDATES=webhook: Telegram sends it back in every update's header. */
+  @IsOptional()
+  @Matches(/^[A-Za-z0-9_-]{32,256}$/, { message: 'TELEGRAM_WEBHOOK_SECRET must be 32 to 256 letters, digits, _ or -' })
+  TELEGRAM_WEBHOOK_SECRET?: string;
 }
 
 export function validateEnvironment(config: Record<string, unknown>): Environment {
@@ -65,6 +87,11 @@ export function validateEnvironment(config: Record<string, unknown>): Environmen
   }
   if (environment.MAIL_TRANSPORT === 'resend' && !environment.RESEND_API_KEY) {
     throw new Error('Invalid environment:\n- RESEND_API_KEY is required when MAIL_TRANSPORT is resend');
+  }
+  if (environment.TELEGRAM_BOT_TOKEN && environment.TELEGRAM_UPDATES === 'webhook') {
+    if (!environment.TELEGRAM_WEBHOOK_URL || !environment.TELEGRAM_WEBHOOK_SECRET) {
+      throw new Error('Invalid environment:\n- TELEGRAM_WEBHOOK_URL and TELEGRAM_WEBHOOK_SECRET are required when TELEGRAM_UPDATES is webhook');
+    }
   }
   if (errors.length > 0) {
     throw new Error(`Invalid environment:\n${errors.map((error) => `- ${Object.values(error.constraints ?? {}).join(', ')}`).join('\n')}`);

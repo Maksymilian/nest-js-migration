@@ -1,5 +1,5 @@
 import type { PGlite } from '@electric-sql/pglite';
-import { WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
+import { WORKOUT_TRACKING_SOURCE, WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
 import { ConcurrencyConflict } from '@app/ddd';
 import type { INestApplication } from '@nestjs/common';
 import { getDrizzleToken } from '@nestjs/drizzle';
@@ -121,7 +121,7 @@ describe('Workout Tracking (e2e)', () => {
   });
 
   describe('recording workouts', () => {
-    it('records a workout and publishes workout-recorded.v1 only after the commit', async () => {
+    it('records a workout and publishes workout-recorded.v1, as a CloudEvent, only after the commit', async () => {
       const equipmentId = await pairedBike('BK-E2E-10');
 
       const { body: workout } = await api()
@@ -136,8 +136,15 @@ describe('Workout Tracking (e2e)', () => {
       expect(broker.emit).toHaveBeenCalledWith(
         WorkoutTrackingTopics.workoutRecordedV1,
         expect.objectContaining({
-          key: 'ada@example.com',
-          payload: {
+          specversion: '1.0',
+          id: expect.any(String),
+          source: WORKOUT_TRACKING_SOURCE,
+          type: WorkoutTrackingTopics.workoutRecordedV1,
+          subject: workout.id,
+          time: expect.any(String),
+          datacontenttype: 'application/json',
+          partitionkey: 'ada@example.com',
+          data: {
             workoutId: workout.id,
             memberId: 'ada@example.com',
             equipmentType: 'BIKE',
@@ -234,7 +241,7 @@ describe('Workout Tracking (e2e)', () => {
       await relay.runOnce();
       expect(broker.emit).toHaveBeenCalledWith(
         WorkoutTrackingTopics.workoutCorrectedV1,
-        expect.objectContaining({ payload: expect.objectContaining({ distanceMeters: 21000, revision: 2 }) }),
+        expect.objectContaining({ subject: workoutId, data: expect.objectContaining({ distanceMeters: 21000, revision: 2 }) }),
       );
     });
 

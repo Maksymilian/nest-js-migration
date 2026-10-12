@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, index, integer, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 // Mirrors the Liquibase changesets in apps/training-progress/liquibase, which own the DDL.
 
@@ -65,3 +65,10 @@ export const trainingGoals = pgTable(
   },
   (table) => [index('training_goals_member_status_idx').on(table.memberId, table.status)],
 );
+
+/** One row per signed-in Telegram chat. Signing out deletes it. */
+export const telegramChats = pgTable('telegram_chats', {
+  chatId: bigint('chat_id', { mode: 'number' }).primaryKey(),
+  memberId: text('member_id').notNull(),
+  signedInAt: timestamp('signed_in_at', { withTimezone: true }).notNull(),
+});

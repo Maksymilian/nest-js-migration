@@ -2,59 +2,6 @@
 
 Two NestJS microservices, designed with Domain-Driven Design: **Workout Tracking** records what members do on connected equipment, and **Training Progress** turns those workouts into progress: a training log, progress summaries, streaks, personal records and training goals, with email notifications.
 
-## Architecture
-
-A fitness platform made of two NestJS microservices, designed with DDD. The full design is in [docs/architecture.md](docs/architecture.md), and the vocabulary is in [docs/ubiquitous-language.md](docs/ubiquitous-language.md).
-
-| Bounded context | Subdomain | Runs in | API | Data |
-|---|---|---|---|---|
-| **Training Progress**: training log, progress summaries, streaks, personal records, training goals | Core | `apps/training-progress` | GraphQL, external | PostgreSQL instance 2, Redis cache |
-| **Workout Tracking**: equipment, pairing, recording, correcting and voiding workouts | Supporting | `apps/workout-tracking` | REST, internal | PostgreSQL instance 1 |
-| **Notifications**: mail about achievements, built on `@nestjs/mail` | Generic | a module in `apps/training-progress` | none | none of its own |
-| **Calendar**: training period boundaries, built on `date-fns` | Generic | a value object in Training Progress | none | none |
-| **Identity & Access** | Generic | later: an identity provider | | |
-
-The services share no database and never call each other. Aggregates raise domain events, which are written to a transactional outbox (`@nestjs/outbox`) in the same transaction as the change. Inside a service, the outbox delivers them to policies that update other aggregates, one aggregate per transaction. Between contexts, only integration events in a published language travel: over RabbitMQ to the other service, and in-process to Notifications. Every consumer applies each event once, through its inbox. Context, aggregate and layer boundaries are checked at build time by `pnpm check:architecture` (dependency-cruiser; rules in section 11.1 of the proposal).
-
-### Context map
-
-```mermaid
-flowchart LR
-  EQ["Connected Equipment<br/>(external system)"]
-  BO["Back-office tools<br/>(internal)"]
-  APP["Member App<br/>(mobile / web)"]
-  IDP["Identity & Access<br/>Generic · later (Auth0)"]
-  MAIL["Mail provider<br/>(SMTP / Resend)"]
-
-  subgraph S1["service: workout-tracking"]
-    subgraph WT["Workout Tracking · Supporting"]
-      WT_OHS["OHS: internal REST /internal/v1"]
-      WT_PL["PL: integration events v1"]
-    end
-  end
-
-  subgraph S2["service: training-progress"]
-    subgraph TP["Training Progress · Core"]
-      TP_ACL["ACL: Workout → Logged Workout"]
-      TP_GQL["OHS: GraphQL /graphql"]
-      TP_PL["PL: goal-achieved.v1,<br/>personal-record-set.v1"]
-    end
-    NT["Notifications · Generic<br/>@nestjs/mail"]
-  end
-
-  EQ -->|"records workouts"| WT_OHS
-  BO -->|"pairing, corrections, voids"| WT_OHS
-  WT_PL ==>|"U → D · Customer / Supplier<br/>outbox → RabbitMQ"| TP_ACL
-  APP -->|"queries, mutations"| TP_GQL
-  TP_PL -->|"U → D · Conformist<br/>outbox, in-process"| NT
-  NT -->|"Conformist via a mail transport"| MAIL
-  IDP -.->|"Conformist: MemberId"| WT
-  IDP -.->|"Conformist: MemberId"| TP
-  IDP -.->|"later: member contacts"| NT
-```
-
-**Legend:** U = upstream, D = downstream, OHS = Open Host Service, PL = Published Language, ACL = Anticorruption Layer. There is no Shared Kernel: `libs/workout-tracking-contracts` holds only Workout Tracking's published language (event payloads and topic names), and `libs/ddd` only technical building blocks, never domain classes.
-
 ## Getting started
 
 Prerequisites: Node.js 24, pnpm, Docker with Compose.
@@ -64,11 +11,15 @@ pnpm install
 cp apps/workout-tracking/.env.example apps/workout-tracking/.env
 cp apps/training-progress/.env.example apps/training-progress/.env
 
-# PostgreSQL x2, Redis, RabbitMQ, and the Liquibase migrations with test records
+# PostgreSQL x2, Redis and RabbitMQ
 docker compose up -d --wait
+
+# both databases' schemas, with test records
+scripts/database/liquibase.sh workout-tracking update
+scripts/database/liquibase.sh training-progress update
 ```
 
-Liquibase (`apps/<service>/liquibase`) creates and updates both databases, including the outbox's `nest_outbox` schema, and adds test records: Ada's bike (`BK-0001`, paired with `ada@example.com`), Grace's treadmill (`TM-0001`), an unpaired rower (`RW-0001`), and two active training goals. Leave the test records out with `LIQUIBASE_CONTEXTS=none docker compose up -d --wait`. RabbitMQ's exchange, queue, dead-letter exchange and queue come from `infrastructure/rabbitmq/definitions.json`.
+Liquibase (`apps/<service>/liquibase`, run in Docker by `scripts/database/liquibase.sh`) creates and updates both databases, including the outbox's `nest_outbox` schema, and adds test records: Ada's bike (`BK-0001`, paired with `ada@example.com`), Grace's treadmill (`TM-0001`), an unpaired rower (`RW-0001`), and two active training goals. Leave the test records out with `scripts/database/liquibase.sh <service> update --context-filter=none`. RabbitMQ's exchange, queue, dead-letter exchange and queue come from `infrastructure/rabbitmq/definitions.json`.
 
 | Service | Port | Main API |
 |---|---|---|
@@ -97,10 +48,30 @@ curl -X POST localhost:3001/internal/v1/equipment/0199c3a2-0000-7000-8000-000000
   -H 'content-type: application/json' \
   -d '{"recordingId":"ride-1","discipline":"CYCLING","startedAt":"2026-10-05T07:00:00.000Z","durationSeconds":14400,"distanceMeters":120000,"calories":2900}'
 
-# ...which reaches Training Progress through the outbox and RabbitMQ
+# ...which reaches Training Progress through the outbox and RabbitMQ, as a CloudEvent
 curl localhost:3002/graphql -H 'content-type: application/json' \
   -d '{"query":"{ member(id: \"ada@example.com\") { trainingLog { edges { node { distanceMeters } } } personalRecords { metric value } trainingGoals { status progress } } }"}'
 ```
+
+### Telegram bot
+
+Members can also read their progress and manage their training goals in Telegram: `/training_log`, `/progress_summary`, `/streak`, `/personal_records` and `/training_goals`, whose buttons abandon a goal or set a new one.
+
+1. In Telegram, send `/newbot` to [@BotFather](https://t.me/BotFather) and copy the token it gives you.
+2. Add it to `apps/training-progress/.env` as `TELEGRAM_BOT_TOKEN=...` and restart Training Progress. In development the bot asks Telegram for updates (`TELEGRAM_UPDATES=polling`), so no public URL is needed.
+3. Open your bot in Telegram and send `/sign_in ada@example.com`, or your own email address. Until Identity exists, it isn't verified.
+
+To see your own workouts, pair the unpaired rower with your email address and record a row:
+
+```bash
+curl -X PUT localhost:3001/internal/v1/equipment/0199c3a2-0000-7000-8000-000000000003/pairing \
+  -H 'content-type: application/json' -d '{"memberId":"you@example.com"}'
+curl -X POST localhost:3001/internal/v1/equipment/0199c3a2-0000-7000-8000-000000000003/recordings \
+  -H 'content-type: application/json' \
+  -d '{"recordingId":"row-1","discipline":"ROWING","startedAt":"2026-10-11T07:00:00.000Z","durationSeconds":1800,"distanceMeters":6000,"calories":420}'
+```
+
+In production, set `TELEGRAM_UPDATES=webhook`, `TELEGRAM_WEBHOOK_URL` (the public HTTPS URL of `POST /telegram/updates`) and `TELEGRAM_WEBHOOK_SECRET`: Telegram then posts the updates to any instance. Without a token the bot is off. See section 6.6 of `docs/architecture.md`.
 
 ### Postman
 
@@ -122,11 +93,39 @@ pnpm check:architecture   # context, aggregate and layer boundaries (dependency-
 
 `pnpm build` runs the architecture check before compiling.
 
+GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `main` and every pull request, plus each service's Liquibase changesets and rollbacks on PostgreSQL 18 (`update-testing-rollback`, test records included) and the scheduler image build.
+
 ## Operations
 
 - Health: `GET /health/live` and `GET /health/ready` on both services. Readiness is `down` without the service's PostgreSQL, and `degraded` (still 200) without RabbitMQ or Redis.
 - Outbox: `GET /internal/v1/admin/outbox/stats` and `/dead-letters` on Workout Tracking, `/internal/admin/outbox/...` on Training Progress, with the `x-admin-token` header (`ADMIN_TOKEN`). Dead letters can be requeued with `POST .../dead-letters/:id/requeue`.
-- RabbitMQ dead letters (invalid integration events, or ones that failed 5 deliveries): queue `training-progress.workout-tracking.dlq`.
+- RabbitMQ dead letters (messages that aren't structured-mode CloudEvents, invalid integration events, or ones that failed 5 deliveries): queue `training-progress.workout-tracking.dlq`. Integration events travel as [CloudEvents](https://cloudevents.io) 1.0 (section 5.4 of `docs/architecture.md`).
+- Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs in `infrastructure/kubernetes/` publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
+
+  ```bash
+  node scripts/scheduler/publish-schedule-trigger.mjs miss-ended-goals
+
+  docker build -t fitness-scheduler scripts/scheduler   # the CronJobs' image
+  docker run --rm --network host fitness-scheduler miss-ended-goals
+  ```
+
+  Triggers that failed 5 deliveries are in `training-progress.schedule.dlq`.
+
+### Database releases and rollbacks
+
+Every Liquibase changeset has a hand-written `--rollback`. The scripts in `scripts/database/` run Liquibase Open Source 4.33 in Docker (nothing to install) against one service's database: the local Docker Compose one by default, or another with `--url` and `--username` (the password from `LIQUIBASE_COMMAND_PASSWORD`, or asked for). Test records only go to the local database.
+
+```bash
+scripts/database/tag.sh workout-tracking 0.002          # before each release, on both databases
+scripts/database/tag.sh training-progress 0.002
+scripts/database/liquibase.sh training-progress history # what's applied, and the tags
+
+scripts/database/rollback.sh training-progress --tag 0.002                   # prints the rollback SQL only
+scripts/database/rollback.sh training-progress --tag 0.002 --apply           # runs it, after a confirmation
+scripts/database/rollback.sh training-progress --tag 0.002 --label FIT-123   # only the changesets labelled FIT-123
+```
+
+`--count <n>` and `--to-date <datetime>` replace `--tag`. Roll back from a checkout of the release being reverted (Liquibase reads the rollback SQL from the changelog), then deploy the application version that matches the reverted schema.
 
 ## Metrics
 

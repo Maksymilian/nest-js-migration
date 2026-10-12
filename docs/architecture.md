@@ -1,5 +1,59 @@
 # Architecture proposal: fitness platform
 
+## Architecture
+
+A fitness platform made of two NestJS microservices, designed with DDD. The full design is in [docs/architecture.md](docs/architecture.md), and the vocabulary is in [docs/ubiquitous-language.md](docs/ubiquitous-language.md).
+
+| Bounded context | Subdomain | Runs in | API | Data |
+|---|---|---|---|---|
+| **Training Progress**: training log, progress summaries, streaks, personal records, training goals | Core | `apps/training-progress` | GraphQL, external | PostgreSQL instance 2, Redis cache |
+| **Workout Tracking**: equipment, pairing, recording, correcting and voiding workouts | Supporting | `apps/workout-tracking` | REST, internal | PostgreSQL instance 1 |
+| **Notifications**: mail about achievements, built on `@nestjs/mail` | Generic | a module in `apps/training-progress` | none | none of its own |
+| **Calendar**: training period boundaries, built on `date-fns` | Generic | a value object in Training Progress | none | none |
+| **Identity & Access** | Generic | later: an identity provider | | |
+
+The services share no database and never call each other. Aggregates raise domain events, which are written to a transactional outbox (`@nestjs/outbox`) in the same transaction as the change. Inside a service, the outbox delivers them to policies that update other aggregates, one aggregate per transaction. Between contexts, only integration events in a published language travel: over RabbitMQ to the other service, and in-process to Notifications. Every consumer applies each event once, through its inbox. Context, aggregate and layer boundaries are checked at build time by `pnpm check:architecture` (dependency-cruiser; rules in section 11.1 of the proposal).
+
+### Context map
+
+```mermaid
+flowchart LR
+  EQ["Connected Equipment<br/>(external system)"]
+  BO["Back-office tools<br/>(internal)"]
+  APP["Member App<br/>(mobile / web)"]
+  IDP["Identity & Access<br/>Generic · later (Auth0)"]
+  MAIL["Mail provider<br/>(SMTP / Resend)"]
+
+  subgraph S1["service: workout-tracking"]
+    subgraph WT["Workout Tracking · Supporting"]
+      WT_OHS["OHS: internal REST /internal/v1"]
+      WT_PL["PL: integration events v1"]
+    end
+  end
+
+  subgraph S2["service: training-progress"]
+    subgraph TP["Training Progress · Core"]
+      TP_ACL["ACL: Workout → Logged Workout"]
+      TP_GQL["OHS: GraphQL /graphql"]
+      TP_PL["PL: goal-achieved.v1,<br/>personal-record-set.v1"]
+    end
+    NT["Notifications · Generic<br/>@nestjs/mail"]
+  end
+
+  EQ -->|"records workouts"| WT_OHS
+  BO -->|"pairing, corrections, voids"| WT_OHS
+  WT_PL ==>|"U → D · Customer / Supplier<br/>outbox → RabbitMQ"| TP_ACL
+  APP -->|"queries, mutations"| TP_GQL
+  TP_PL -->|"U → D · Conformist<br/>outbox, in-process"| NT
+  NT -->|"Conformist via a mail transport"| MAIL
+  IDP -.->|"Conformist: MemberId"| WT
+  IDP -.->|"Conformist: MemberId"| TP
+  IDP -.->|"later: member contacts"| NT
+```
+
+**Legend:** U = upstream, D = downstream, OHS = Open Host Service, PL = Published Language, ACL = Anticorruption Layer. There is no Shared Kernel: `libs/workout-tracking-contracts` holds only Workout Tracking's published language (event payloads and topic names), and `libs/ddd` only technical building blocks, never domain classes.
+
+
 **Status:** implemented, 2026-10-09 (proposed 2026-10-08). Where the implementation settled an open point, this document says so.
 
 The vocabulary used here is defined in [the ubiquitous language](ubiquitous-language.md). Implementation follows the NestJS docs cached in [`docs/nestjs/`](nestjs/); each section links to the page it's based on.
@@ -84,7 +138,7 @@ flowchart LR
 | Identity provider (later) | Notifications | **Anticorruption Layer**: the `MemberContactDirectory` adapter translates the provider's user profile into a *Member Contact*, so the provider's vocabulary ("user") never reaches Notifications. |
 
 **No Shared Kernel**, on purpose. Two libraries are shared, and neither contains domain concepts:
-- `libs/workout-tracking-contracts`: Workout Tracking's published language (integration event payloads and topic names). Owned by Workout Tracking.
+- `libs/workout-tracking-contracts`: Workout Tracking's published language (integration event payloads, topic names and the CloudEvents `source`). Owned by Workout Tracking.
 - `libs/ddd`: technical building blocks (`AggregateRoot`, `DomainEvent`, `DomainError`). Plain TypeScript.
 
 Training Progress' published language lives in its own app (`training-progress/published-language/`), because its only consumer runs in the same process. It moves to a library when Notifications moves out.
@@ -117,7 +171,7 @@ The big picture as commands, aggregates, domain events and policies ("whenever X
 | Member (GraphQL) | Set Training Goal | `TrainingGoal` | `TrainingGoalSet` | **Check Goal Achievement** (workouts already in the period count) |
 | Policy: Check Goal Achievement | Record Goal Progress | `TrainingGoal` | `GoalAchieved` | Published as `goal-achieved.v1` → **Notify Goal Achieved** (Notifications) |
 | Member (GraphQL) | Abandon Training Goal | `TrainingGoal` | `GoalAbandoned` | |
-| Scheduler, daily | Miss Ended Goals | `TrainingGoal` | `GoalMissed` | |
+| Schedule trigger (Kubernetes CronJob, daily) | Miss Ended Goals | `TrainingGoal` | `GoalMissed` | |
 
 ## 3. Tactical design rules
 
@@ -218,7 +272,7 @@ sequenceDiagram
 | Kind | Topic pattern | Transport (`route`) | Example |
 |---|---|---|---|
 | Domain event, handled in the same service | `<context>.domain.<event>.v<n>` | `local`: `@OnOutboxMessage()` handlers in this process | `training-progress.domain.workout-logged.v1` |
-| Integration event, for other contexts | `<context>.integration.<event>.v<n>` | RabbitMQ (`ClientProxyTransport`) when the consumer is another service; `local` when it runs in the same process (Notifications) | `workout-tracking.integration.workout-recorded.v1`, `training-progress.integration.goal-achieved.v1` |
+| Integration event, for other contexts | `<context>.integration.<event>.v<n>` | RabbitMQ (`ClientProxyTransport`), as a CloudEvent whose `type` is the topic, when the consumer is another service; `local` when it runs in the same process (Notifications) | `workout-tracking.integration.workout-recorded.v1`, `training-progress.integration.goal-achieved.v1` |
 
 Domain event payloads are versioned too: during a rolling deploy, a message added by the previous release can be delivered to the new one (outbox production checklist).
 
@@ -304,7 +358,7 @@ Malformed input is a `400` from `ValidationPipe` on every route. Responses are r
 | `workout_corrections` | `workout_id`, `revision`, previous and new metrics, `reason`, `corrected_at` | primary key `(workout_id, revision)`. Audit trail |
 | `nest_outbox.*` | The outbox store's tables, created by Liquibase from `nest-outbox sql` (changeset 0002); the store runs with `migrate: false` | |
 
-**Migrations:** Liquibase, formatted SQL changelogs in `apps/workout-tracking/liquibase` (master `changelog.yaml`), run by the `workout-tracking-db-migrations` service in Docker Compose. Test records are changesets with `context:test-data`. The Drizzle schema in `platform/database/schema.ts` mirrors the changesets and is only used to build queries. The e2e tests apply the same changesets to PGlite: formatted SQL is plain SQL with comments.
+**Migrations:** Liquibase, formatted SQL changelogs in `apps/workout-tracking/liquibase` (master `changelog.yaml`), run in Liquibase's Docker image by `scripts/database/liquibase.sh workout-tracking update` (the same folder has the tag and rollback scripts). Test records are changesets with `context:test-data`. The Drizzle schema in `platform/database/schema.ts` mirrors the changesets and is only used to build queries. The e2e tests apply the same changesets to PGlite: formatted SQL is plain SQL with comments.
 
 ### 5.4 Published language (`libs/workout-tracking-contracts`)
 
@@ -314,17 +368,21 @@ Malformed input is a `400` from `ValidationPipe` on every route. Responses are r
 | `WorkoutCorrected` | `workout-tracking.integration.workout-corrected.v1` |
 | `WorkoutVoided` | `workout-tracking.integration.workout-voided.v1` |
 
-All three carry the full workout snapshot (event-carried state transfer), so the consumer never has to call back:
+All three carry the full workout snapshot (event-carried state transfer), so the consumer never has to call back. Each one travels as a [CloudEvent](https://cloudevents.io) 1.0 in the JSON event format, in the structured content mode of the CloudEvents AMQP binding: the message's content type is `application/cloudevents+json; charset=utf-8`, and its body is the whole event:
 
 ```json
 {
+  "specversion": "1.0",
   "id": "0199c3a2-…",
-  "topic": "workout-tracking.integration.workout-recorded.v1",
-  "key": "4f1c…",
-  "createdAt": "2026-10-08T09:30:12.000Z",
-  "payload": {
+  "source": "/workout-tracking",
+  "type": "workout-tracking.integration.workout-recorded.v1",
+  "subject": "0199c3a2-…",
+  "time": "2026-10-08T09:30:12.000Z",
+  "datacontenttype": "application/json",
+  "partitionkey": "ada@example.com",
+  "data": {
     "workoutId": "0199c3a2-…",
-    "memberId": "4f1c…",
+    "memberId": "ada@example.com",
     "equipmentType": "BIKE",
     "discipline": "CYCLING",
     "startedAt": "2026-10-08T08:30:00.000Z",
@@ -337,7 +395,17 @@ All three carry the full workout snapshot (event-carried state transfer), so the
 }
 ```
 
-The envelope is `@nestjs/outbox`'s `OutboxEnvelope`; `id` is the domain event's `eventId`, on which the inbox deduplicates. A breaking change means a new version (`.v2`), published next to `.v1` until every consumer has moved.
+| Attribute | Value |
+|---|---|
+| `id` | The outbox message id, which is the domain event's `eventId`: the same on every redelivery, so the inbox deduplicates on it |
+| `source` | `/workout-tracking` (`WORKOUT_TRACKING_SOURCE`) |
+| `type` | The topic, also the routing key. Kept as it is rather than renamed to a reverse-DNS name (a SHOULD in the specification), so the routing keys and bindings didn't change |
+| `subject` | The workout id |
+| `time` | When the change was recorded: the outbox message's creation, in the same transaction |
+| `partitionkey` | The member id ([Partitioning extension](https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/partitioning.md)): the outbox key, which keeps a member's events in order |
+| `datacontenttype`, `data` | `application/json`, the `WorkoutSnapshotV1` |
+
+The AMQP properties repeat the id (`message_id`) and the type (`type`), for tools that read only those. A breaking change means a new version (`.v2`), published next to `.v1` until every consumer has moved.
 
 ## 6. Training Progress (core subdomain, GraphQL)
 
@@ -376,7 +444,7 @@ Policies are application-layer handlers: they load one aggregate, call one metho
 | | `LoggedWorkoutRevised`, `LoggedWorkoutStoppedCounting` | Reads the record candidates from the training log through the same transaction (ties go to the current holders), then `recalculate()` on the member's `PersonalRecords` for that discipline |
 | Check Goal Achievement | `WorkoutLogged`, `LoggedWorkoutRevised` | Loads the member's `Active` goals; for each goal whose `progressCriteria().isMetBy(discipline, startedAt)` is true, in its own transaction: sum the training log for `progressCriteria()`, then `recordProgress()`. The decision which goals are affected stays in the domain |
 | | `TrainingGoalSet` | The same for the new goal, because workouts already in its period count |
-| Miss Ended Goals (scheduled, daily, [`application/task-scheduling.md`](nestjs/application/task-scheduling.md)) | | `miss()` on each `Active` goal past its grace period, each in its own transaction |
+| Miss Ended Goals (on its schedule trigger, daily; section 7.5) | | `miss()` on each `Active` goal past its grace period, each in its own transaction |
 
 ### 6.3 Notifications (generic subdomain, `@nestjs/mail`)
 
@@ -484,9 +552,30 @@ These types are client representations built from read models and command result
 | `logged_workouts` | `id` (= upstream `WorkoutId`), `member_id`, `discipline`, `started_at`, `duration_seconds`, `distance_meters`, `calories`, `counts`, `source_revision` (also the optimistic-lock check), `logged_at` | index `(member_id, started_at desc, id desc) where counts` |
 | `personal_records` | `member_id`, `discipline`, and per record metric its value, logged workout and set-at time (`longest_distance_meters`, `longest_distance_logged_workout_id`, `longest_distance_set_at`, ...), `version` | primary key `(member_id, discipline)`: one row per `PersonalRecords` aggregate |
 | `training_goals` | `id`, `member_id`, `metric`, `target`, `discipline` (nullable), `starts_on`, `ends_on`, `status`, `set_at`, `achieved_at`, `missed_at`, `abandoned_at`, `version` | index `(member_id, status)` |
+| `telegram_chats` | `chat_id`, `member_id`, `signed_in_at` | primary key `chat_id`: one row per signed-in Telegram chat (section 6.6) |
 | `nest_outbox.*` | Domain event messages, dead letters and inboxes; created by Liquibase from `nest-outbox sql`, the store runs with `migrate: false` | |
 
-**Migrations:** Liquibase changelogs in `apps/training-progress/liquibase`, run by the `training-progress-db-migrations` service in Docker Compose, as for Workout Tracking (section 5.3). Test records: an active goal each for Ada and Grace.
+**Migrations:** Liquibase changelogs in `apps/training-progress/liquibase`, run by `scripts/database/liquibase.sh training-progress update`, as for Workout Tracking (section 5.3). Test records: an active goal each for Ada and Grace.
+
+### 6.6 Telegram bot (an interface)
+
+A second interface of Training Progress, next to GraphQL: members read their progress and manage their training goals in a private Telegram chat. It adds no domain concepts. Each bot command dispatches the query or command its GraphQL counterpart does, and the domain still decides (`goal.abandon(memberId)` refuses another member's goal). Terms: *Telegram Chat*, *Sign In*, *Sign Out*, *Bot Command* in the glossary.
+
+| Bot command or button | Dispatches |
+|---|---|
+| `/training_log`, [Older workouts] | `TrainingLogQuery`, 5 workouts a page |
+| `/progress_summary`, its period and discipline buttons | `ProgressSummaryQuery` |
+| `/streak` | `StreakQuery` |
+| `/personal_records` | `PersonalRecordsQuery` |
+| `/training_goals` | `TrainingGoalsQuery` (active), `TrainingGoalProgressQuery` per goal |
+| [Abandon], then [Abandon it] | `AbandonTrainingGoalCommand` |
+| [Set a goal]: metric, discipline, target, period, then [Set the goal] | `SetTrainingGoalCommand` |
+
+- **Where the code is.** `platform/telegram/` holds the plumbing: grammY's `Bot`, `TelegramBot` (the registry of bot commands and buttons, the sign-in check, the error policy, polling or the webhook), `TelegramChats` and the sign-in commands. The bot commands live in their modules' `interface/telegram/` (`MemberBotCommands`, `TrainingGoalsBotCommands`), as the resolvers live in `interface/graphql/`.
+- **Sign in.** Stands in for Identity: `/sign_in <email address>` stores the chat's member id in `telegram_chats`. Not verified, as the GraphQL API's member ids aren't (section 14, decision 6). An identity provider replaces it with a login link.
+- **Updates.** `TELEGRAM_UPDATES=webhook` in production: Telegram posts to `POST /telegram/updates` (outside `/internal`), received with `@nestjs/webhooks` (receive-only, `outgoing: false`). A custom `WebhookSignatureScheme` checks the `X-Telegram-Bot-Api-Secret-Token` header in constant time, and deduplicates on `update_id` with the outbox's inbox (consumer `webhooks:telegram`), so a resent update sets no second goal. `TELEGRAM_UPDATES=polling` in development: one instance asks Telegram for updates, and no public URL is needed. Without `TELEGRAM_BOT_TOKEN` the bot is off and the webhook route doesn't exist.
+- **Errors.** A domain error becomes a reply, or an alert on a button. A call Telegram refuses (a blocked bot, a message that didn't change) is logged, since handling the update again wouldn't help. Any other error answers the webhook with a 500, so Telegram sends the update again. The service starts and serves GraphQL while Telegram is unreachable.
+- **No session.** The set-goal wizard keeps its choices in the buttons' callback data (at most 64 bytes, checked by its tests); the bot answers private chats only.
 
 ## 7. Integration between the services: RabbitMQ
 
@@ -495,6 +584,7 @@ Based on [`microservices/rabbitmq.md`](nestjs/microservices/rabbitmq.md) and [`f
 ### 7.1 Producer: Workout Tracking
 
 - `OutboxModule.forRootAsync()` with `PostgresOutboxStore` (`fromDrizzle(db)`) and a `ClientProxyTransport` over a RabbitMQ `ClientsModule` client. `route` sends `*.integration.*` topics to RabbitMQ.
+- **CloudEvents:** the transport's `toPacket` wraps each message in a CloudEvent with the [`cloudevents`](https://github.com/cloudevents/sdk-javascript) SDK (`published-language/cloud-event.mapper.ts`), which validates it against the specification. The client's `serializer` (`platform/messaging/cloud-event.serializer.ts`) writes it in structured content mode, instead of Nest's own `{ pattern, data }` packet. The SDK has no AMQP binding, and the binding's structured mode is the JSON event format plus a content type, so the serializer is all that's needed.
 - The relay runs in every instance; leases and `SKIP LOCKED` keep instances from publishing the same message in parallel.
 - `retry`: the package default of 20 attempts (about 30–60 minutes), so an ordinary broker outage doesn't dead-letter events. Dead letters are inspected and requeued with `OutboxDeadLetters` through an internal admin route.
 - **Broker acknowledgement (settled):** Nest's `ClientRMQ` publishes through an `amqp-connection-manager` channel wrapper, which is a confirm channel by default, and `dispatchEvent()` resolves only in the publish callback: the outbox counts a message as published once the broker confirmed it. No custom `OutboxTransport` is needed. Messages are `persistent`; exchanges and queues are durable.
@@ -506,22 +596,26 @@ Based on [`microservices/rabbitmq.md`](nestjs/microservices/rabbitmq.md) and [`f
 | Exchange `workout-tracking.integration` | topic, durable. Owned by Workout Tracking (the published language) |
 | Queue `training-progress.workout-tracking` | quorum, durable, bound to `workout-tracking.integration.#`; `x-single-active-consumer: true`; `x-delivery-limit: 5`; dead-letters to `training-progress.dlx` |
 | Queue `training-progress.workout-tracking.dlq` | bound to `training-progress.dlx`; inspected and replayed by hand |
+| Queue `training-progress.schedule` | quorum, durable; schedule triggers, published to it through the default exchange (section 7.5); `x-delivery-limit: 5`; dead-letters through the default exchange to `training-progress.schedule.dlq` |
+| Queue `training-progress.schedule.dlq` | schedule triggers that kept failing: an incident, inspected by hand |
 
-The topology is declared before any service starts, from `infrastructure/rabbitmq/definitions.json`, which Docker Compose loads into RabbitMQ: an integration event published before Training Progress ever ran would otherwise reach an exchange without a queue, and be lost. The services declare the same objects with the same arguments (Training Progress' RMQ server asserts its queue and binding, a `DeadLetterTopology` provider the DLX and DLQ). The exchange lets future consumers bind their own queues without changes to Workout Tracking (the RMQ transport's `exchange`, `exchangeType` and `wildcards` options).
+The topology is declared before any service starts, from `infrastructure/rabbitmq/definitions.json`, which Docker Compose loads into RabbitMQ: an integration event published before Training Progress ever ran would otherwise reach an exchange without a queue, and be lost. The services declare the same objects with the same arguments (Training Progress' RMQ servers assert their queues and the binding, a `DeadLetterTopology` provider the DLX and both DLQs). The exchange lets future consumers bind their own queues without changes to Workout Tracking (the RMQ transport's `exchange`, `exchangeType` and `wildcards` options).
 
 ### 7.3 Consumer: Training Progress' anticorruption layer
 
-- A hybrid application: GraphQL over HTTP plus an RMQ listener added with `connectMicroservice(..., { inheritAppConfig: true })`. `app.listen()` comes before `startAllMicroservices()`, so no message is handled before every module has initialized.
+- A hybrid application: GraphQL over HTTP plus two RMQ listeners (this one, and the schedule triggers' of section 7.5), each added with `connectMicroservice(..., { inheritAppConfig: true })`. `app.listen()` comes before `startAllMicroservices()`, so no message is handled before every module has initialized.
 - `noAck: false`: a message is acked only after its transaction commits.
+- The RMQ server's `deserializer` (`platform/messaging/cloud-event.deserializer.ts`) reads structured-mode CloudEvents: the event's `type` picks the `@EventPattern()` handler. A message that isn't one (another content type, the binary content mode, Nest's own packet) gets a pattern that no handler has, so the server nacks it without requeue, and RabbitMQ dead-letters it. Only Workout Tracking publishes to this queue, in structured mode, so the binary mode isn't read; the specification says a receiver SHOULD read both.
 - For each message, the ACL:
-  1. validates the payload against the contract class;
-  2. **translates** it into this context's language: `workout-recorded.v1` → *Log Workout*, `workout-corrected.v1` → *Revise Logged Workout*, `workout-voided.v1` → *Stop Counting Logged Workout*;
-  3. dispatches the command, whose handler runs in one transaction with `OutboxInbox.processInTransaction(tx, 'training-progress', envelope.id, ...)` (`Transactions.runOnce()`): inbox record, `LoggedWorkout` change and its domain events commit together;
-  4. acks.
-- **Failures:** an invalid payload is nacked without requeue and goes to the DLQ. Any other error is nacked with requeue, and RabbitMQ dead-letters it after `x-delivery-limit` deliveries.
-- **Ordering:** the single active consumer keeps the queue order across instances (the others are hot standbys), and inside the process each key's messages are handled one at a time, as in the outbox docs' analytics controller. The source revision guard is the safety net.
+  1. validates the CloudEvent against the specification with the SDK, after checking `specversion` and `id` itself (the SDK fills in a missing one, and the inbox needs the producer's), and checks that the `source` is Workout Tracking;
+  2. validates the `data` against the contract class;
+  3. **translates** it into this context's language: `workout-recorded.v1` → *Log Workout*, `workout-corrected.v1` → *Revise Logged Workout*, `workout-voided.v1` → *Stop Counting Logged Workout*;
+  4. dispatches the command, whose handler runs in one transaction with `OutboxInbox.processInTransaction(tx, 'training-progress', event.id, ...)` (`Transactions.runOnce()`): inbox record, `LoggedWorkout` change and its domain events commit together;
+  5. acks.
+- **Failures:** an invalid CloudEvent or payload is nacked without requeue and goes to the DLQ. Any other error is nacked with requeue, and RabbitMQ dead-letters it after `x-delivery-limit` deliveries.
+- **Ordering:** the single active consumer keeps the queue order across instances (the others are hot standbys), and inside the process each `partitionkey`'s messages are handled one at a time, as in the outbox docs' analytics controller. The source revision guard is the safety net.
 - **Out of order anyway** (a redelivery after a nack goes back to the queue): every integration event carries the whole workout, so the handlers don't depend on order. A recording of a workout already logged changes nothing; a correction of a workout not logged yet logs it with the corrected metrics; a void of one not logged yet logs it as not counting (`logStoppedCounting`). The source revision guard ignores whatever is older.
-- Training Progress' own outbox (relay **enabled**, `local` transport only) carries its domain events to its policies, and its published language to Notifications. A daily job prunes inboxes with `inbox.prune('30d')`.
+- Training Progress' own outbox (relay **enabled**, `local` transport only) carries its domain events to its policies, and its published language to Notifications. Inbox records aren't pruned: there are no cleanup jobs, and a stale or stuck message is an incident, found through observability.
 
 ### 7.4 Delivery guarantees
 
@@ -536,6 +630,15 @@ The topology is declared before any service starts, from `infrastructure/rabbitm
 | A message keeps failing | Dead-lettered: in RabbitMQ after 5 deliveries, in the outbox after its retries |
 
 At-least-once delivery everywhere; exactly-once effects on each service's own database.
+
+### 7.5 Schedule triggers
+
+There are no scheduled jobs in the services (no `@nestjs/schedule`): they run as several instances, and each would run the job. Time-based work starts with a **schedule trigger** instead:
+
+- **When:** a Kubernetes CronJob per trigger (`infrastructure/kubernetes/`, e.g. `miss-ended-goals.cronjob.yaml`, daily at 00:05 UTC) runs the scheduler image, built from `scripts/scheduler/`.
+- **Publish:** `publish-schedule-trigger.mjs <name>` publishes one CloudEvent (`source` `/scheduler`, `type` `<context>.schedule.<policy>.v<n>`, no `data`) in structured content mode to the service's schedule queue, waits for the broker's confirmation, and exits. It's `mandatory`, so a missing queue fails the run instead of losing the trigger. The same command runs it by hand.
+- **Process:** Training Progress' second RMQ listener consumes `training-progress.schedule` (`prefetchCount: 1`, `noAck: false`, the same `CloudEventDeserializer`). RabbitMQ gives each trigger to one instance; `ScheduleTriggersController` dispatches the command with the current time (`MissEndedGoalsCommand`) and acks once it's done.
+- **Failures:** a failed run is requeued, and RabbitMQ dead-letters it to `training-progress.schedule.dlq` after 5 deliveries: an incident, found through observability. A CronJob retry can publish a trigger twice; that's harmless, because the policy is idempotent (`miss()` changes only an active goal past its grace period).
 
 ## 8. Caching (Redis)
 
@@ -561,7 +664,7 @@ The training log isn't cached: it's paginated, and the `(member_id, started_at d
 | Configuration | Required env vars and their formats; the app doesn't start without them | `@nestjs/config` with a validation schema ([`application/configuration.md`](nestjs/application/configuration.md)) |
 | REST input | Shape, types, formats, unknown fields | Global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true })` with `class-validator` DTOs ([`application/validation.md`](nestjs/application/validation.md)) |
 | GraphQL input | The same, on `@InputType()` classes | The same global `ValidationPipe` |
-| Incoming integration events | Payload against the contract class | In the ACL; invalid → DLQ |
+| Incoming integration events | The CloudEvent against the specification (`cloudevents` SDK) and Workout Tracking's source; its data against the contract class | In the ACL; invalid → DLQ |
 | Domain | Business rules (invariants) | Value objects and aggregates throw `DomainError` subclasses. A REST exception filter maps them to `404`/`409`/`422`; GraphQL maps them to error codes |
 
 DTOs check the **shape** of input; aggregates and value objects check **business rules**. A rule such as "the discipline must be supported by the equipment type" lives only in the domain, never in a DTO.
@@ -603,9 +706,9 @@ apps/
         application/                   commands/ (record, correct, void), queries/
         infrastructure/                drizzle-workout.repository.ts
         interface/http/                workouts.controller.ts, recordings.controller.ts, dto/
-      published-language/              domain event → integration event mappers (contracts in libs/)
+      published-language/              domain event → integration event mappers (contracts in libs/), outbox message → CloudEvent
     platform/                          database, outbox setup + DomainEventPublisher + route table,
-                                       domain-exception filter, health
+                                       domain-exception filter, health, messaging/ (the CloudEvents serializer)
   training-progress/src/
     training-progress/                 bounded context (core)
       training-log/                    domain/ (logged-workout.ts, events/, values/: logged-workout-id.ts, discipline.ts,
@@ -617,20 +720,25 @@ apps/
       progress-summary/                application/queries/, interface/graphql/
       calendar/                        domain/values/training-period.ts on date-fns (generic subdomain, used as a library)
       members/                         domain/values/member-id.ts; interface/graphql/member.resolver.ts (the Member root type
-                                       and its field resolvers)
+                                       and its field resolvers); interface/telegram/ (member-bot-commands.ts, bot-formatting.ts)
       workout-tracking-acl/            RMQ handlers, contract validation, translation into this context's commands
       published-language/              topics and payloads for Notifications, domain event → integration event mappers
     notifications/                     bounded context (generic): mail classes, templates, handlers,
                                        member-contact-directory (port + development adapter)
     platform/                          database, outbox setup + DomainEventPublisher + route table, cache
-                                       (incl. the invalidation handler), GraphQL error mapping, health
+                                       (incl. the invalidation handler), GraphQL error mapping, health,
+                                       messaging/ (the CloudEvents deserializer, the dead-letter topology),
+                                       telegram/ (the bot, sign-in, the webhook; section 6.6)
 libs/
   ddd/                                 AggregateRoot, DomainEvent, DomainError, ConcurrencyConflict, Transaction, generateId
                                        (technical, no domain concepts)
-  workout-tracking-contracts/          Workout Tracking's published language: topics, exchange and payload classes
+  workout-tracking-contracts/          Workout Tracking's published language: topics, exchange, CloudEvents source and payload classes
 infrastructure/rabbitmq/               definitions.json (user, exchanges, queues, bindings of section 7.2), rabbitmq.conf
+infrastructure/kubernetes/             CronJobs that publish schedule triggers (section 7.5)
 postman/                               workout-tracking (REST) and training-progress (GraphQL) collections
-compose.yaml                           PostgreSQL x2, Redis, RabbitMQ, Liquibase migrations
+compose.yaml                           PostgreSQL x2, Redis, RabbitMQ
+scripts/database/                      Liquibase in Docker: update, tag and roll back one service's database
+scripts/scheduler/                     The scheduler image: publishes one schedule trigger and exits (section 7.5)
 ```
 
 Each app also has `liquibase/` (its schema), `test/` (e2e on PGlite with the changesets) and `.env.example`.
@@ -669,18 +777,20 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Concern | Choice | Why |
 |---|---|---|
 | ORM | Drizzle through `@nestjs/drizzle` ([`data/drizzle.md`](nestjs/data/drizzle.md)) | The outbox tutorial's primary setup (`fromDrizzle`); the schema lives in plain TypeScript, which keeps persistence out of the domain classes. Cost: a small custom Terminus indicator |
-| Migrations | Liquibase 4.33 (Docker image), formatted SQL changelogs | Requested for creating and updating the schemas and adding test records from Docker Compose. Owns all DDL, the outbox store's schema included; drizzle-kit isn't used |
+| Migrations | Liquibase 4.33 (Docker image), formatted SQL changelogs | Requested for creating and updating the schemas and adding test records; run by the scripts in `scripts/database/`, which also tag releases and roll them back. Owns all DDL, the outbox store's schema included; drizzle-kit isn't used |
 | Domain events, integration events, inboxes | `@nestjs/outbox` with `PostgresOutboxStore` | Official package: transactional writes, local handlers, retries, dead letters, per-key ordering, inboxes |
 | Commands and queries | `@nestjs/cqrs` (`CommandBus`, `QueryBus` only) | Official recipe; one handler per use case |
 | GraphQL | `@nestjs/graphql` with `@nestjs/apollo`, code first | Official integration |
 | Messaging | `@nestjs/microservices` RMQ transport | Requested instead of SQS/SNS. Swapping the broker later means changing one `OutboxTransport` |
+| Event format between services | [CloudEvents](https://cloudevents.io) 1.0 with the [`cloudevents`](https://github.com/cloudevents/sdk-javascript) SDK, structured content mode | The CNCF standard, so tools and future consumers read the events without knowing Nest. The SDK builds and validates the events; it has no AMQP binding, so a serializer and a deserializer for the RMQ transport do the structured mode (section 7) |
 | Notifications (generic) | `@nestjs/mail` | Official package with an outbox integration; file transport for development |
+| Telegram bot | [grammY](https://grammy.dev), with `@nestjs/webhooks` for the webhook ([`http/webhooks.md`](nestjs/http/webhooks.md)) | The Nest docs have no Telegram recipe. grammY routes bot commands and buttons and types the Bot API; `@nestjs/webhooks` verifies Telegram's secret token and deduplicates updates with the outbox's inbox |
 | Calendar (generic) | `date-fns` | ISO weeks and period boundaries without hand-written date arithmetic |
 | Cache | `@nestjs/cache-manager` with `@keyv/redis` | Official recipe |
 | Health | `@nestjs/terminus` | Official recipe |
 | Validation | `class-validator`, `class-transformer` | Official recipe |
 | Configuration | `@nestjs/config` | Official recipe |
-| Scheduled jobs | `@nestjs/schedule` | Missing ended goals; pruning inboxes |
+| Scheduled work | Kubernetes CronJobs publishing schedule triggers (`scripts/scheduler/`), no `@nestjs/schedule` | The services run as several instances: Kubernetes decides when, and RabbitMQ gives each trigger to one instance. Only Miss Ended Goals; stale messages are incidents for observability, not for a cleanup job |
 | Architecture check | `dependency-cruiser`, run with pnpm | The Nest docs have no recipe for import boundaries. It checks the resolved import graph (including `.js` → `.ts` under `nodenext` and the `@app/*` aliases), and its rules compose, which oxlint's overrides don't (section 11.1) |
 | Tests | Vitest with SWC (`unplugin-swc`, [`recipes/swc.md`](nestjs/recipes/swc.md)), PGlite | Aggregate tests as given/when/then on domain events; ACL, cache and filter tests; e2e tests per service on PGlite with the Liquibase changesets, the relay driven with `runOnce()`, as in the outbox docs' Testing section |
 | Build | Nest CLI monorepo with Rspack (the monorepo default) | One bundle per service in `dist/apps/<service>/main.js`; mail templates copied as CLI assets |
@@ -696,7 +806,7 @@ Every building block is generated with the Nest CLI (see `CLAUDE.md`). Each mile
 4. **Workout Tracking: outbox and published language.** `@nestjs/outbox`, `DomainEventPublisher` with the route table, the RabbitMQ transport with publisher confirms, the contracts, the dead-letter admin routes. Tests: a failed transaction publishes nothing; a duplicate recording publishes nothing new.
 5. **Training Progress: training log.** Hybrid app, the ACL with the inbox, the `LoggedWorkout` aggregate, its domain events, GraphQL `member` and `trainingLog`. Tests: the ACL's translation of each integration event; redelivered and out-of-order integration events change nothing.
 6. **Training Progress: personal records, progress summary, streak, Redis.** The `PersonalRecords` aggregate and its policy, the read models, cache-aside, invalidation through domain events. Tests: each policy is idempotent; Redis down still answers.
-7. **Training Progress: training goals.** The `TrainingGoal` aggregate and its progress criteria, mutations, the Check Goal Achievement policy, the daily jobs.
+7. **Training Progress: training goals.** The `TrainingGoal` aggregate and its progress criteria, mutations, the Check Goal Achievement policy, Miss Ended Goals.
 8. **Notifications (generic).** Training Progress' published language for it, `@nestjs/mail` with `FileMailTransport`, the two handlers, `MemberContactDirectory` with its development adapter.
 9. **Health checks in both apps** (`nest generate module health`, `nest generate controller health`, custom indicators), graceful shutdown, and two Postman collections: Workout Tracking's REST API and Training Progress' GraphQL API.
 10. **Infrastructure and migrations.** Docker Compose for both PostgreSQL instances, Redis and RabbitMQ (with its topology from a definitions file), and Liquibase changelogs per service, with test records.
@@ -705,7 +815,7 @@ Every building block is generated with the Nest CLI (see `CLAUDE.md`). Each mile
 
 | # | Topic | Assumption until decided |
 |---|---|---|
-| 1 | Running PostgreSQL ×2, Redis and RabbitMQ locally | **Decided:** `compose.yaml` runs the infrastructure only (the services run on the host), and Liquibase migrates both databases from it, with test records |
+| 1 | Running PostgreSQL ×2, Redis and RabbitMQ locally | **Decided:** `compose.yaml` runs the infrastructure only (the services run on the host); `scripts/database/liquibase.sh` migrates both databases, with test records |
 | 2 | Time zones | Training periods, active days and streaks use UTC. Real members expect their own time zone; that needs a member time zone, which needs Identity |
 | 3 | Achievements vs records | Achievements are final; personal records are recalculated and can go down |
 | 4 | Goal grace period | One day after the goal period ends, so late recordings still count |

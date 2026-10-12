@@ -1,7 +1,8 @@
 import type { PGlite } from '@electric-sql/pglite';
-import { WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
+import { WORKOUT_TRACKING_SOURCE, WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
 import { CACHE_MANAGER, type Cache } from '@nestjs/cache-manager';
 import type { INestApplication } from '@nestjs/common';
+import { CommandBus } from '@nestjs/cqrs';
 import { getDrizzleToken } from '@nestjs/drizzle';
 import { InMemoryMailTransport, MailTransport } from '@nestjs/mail';
 import { OutboxRelay } from '@nestjs/outbox';
@@ -18,12 +19,16 @@ process.env.REDIS_URL = 'redis://localhost:1';
 process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off'; // no poll loop: the tests drive the relay
 process.env.MAIL_TRANSPORT = 'file';
+process.env.TELEGRAM_BOT_TOKEN = ''; // the bot is off, whatever .env says: telegram.e2e-spec.ts covers it
 
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { CloudEventDeserializer } = await import('../src/platform/messaging/cloud-event.deserializer.js');
 const { WorkoutTrackingEventsController } = await import('../src/training-progress/workout-tracking-acl/workout-tracking-events.controller.js');
-const { MissEndedGoalsJob } = await import('../src/training-progress/training-goals/application/miss-ended-goals.job.js');
+const { MissEndedGoalsCommand } = await import('../src/training-progress/training-goals/application/commands/miss-ended-goals.command.js');
+const { ScheduleTriggersController } = await import('../src/training-progress/training-goals/interface/schedule/schedule-triggers.controller.js');
+const { ScheduleTriggers } = await import('../src/platform/messaging/schedule-triggers.js');
 const { PersonalRecordMail } = await import('../src/notifications/personal-record.mail.js');
 const { GoalAchievedMail } = await import('../src/notifications/goal-achieved.mail.js');
 
@@ -70,18 +75,32 @@ describe('Training Progress (e2e)', () => {
     throw new Error('the outbox did not drain');
   }
 
-  /** Delivers an integration event to the anticorruption layer the way RabbitMQ does, and reports the ack. */
+  /**
+   * Delivers an integration event to the anticorruption layer the way RabbitMQ does: a CloudEvent in
+   * structured content mode, read by the deserializer, whose pattern picks the handler. Reports the ack.
+   */
   async function deliver(topic: Topic, payload: Record<string, unknown>, id = uuidv7()) {
     const channel = { ack: vi.fn(), nack: vi.fn() };
     const message = { content: Buffer.from('') };
     const context = { getChannelRef: () => channel, getMessage: () => message };
-    const envelope = { id, topic, key: String(payload.memberId), headers: {}, createdAt: Date.now(), payload };
+    const cloudEvent = {
+      specversion: '1.0',
+      id,
+      source: WORKOUT_TRACKING_SOURCE,
+      type: topic,
+      subject: String(payload.workoutId),
+      time: new Date().toISOString(),
+      datacontenttype: 'application/json',
+      partitionkey: String(payload.memberId),
+      data: payload,
+    };
+    const { pattern, data } = new CloudEventDeserializer().deserialize(cloudEvent, { contentType: 'application/cloudevents+json; charset=utf-8' });
     const acl = app.get(WorkoutTrackingEventsController);
     const handle = {
-      [WorkoutTrackingTopics.workoutRecordedV1]: () => acl.workoutRecorded(envelope, context),
-      [WorkoutTrackingTopics.workoutCorrectedV1]: () => acl.workoutCorrected(envelope, context),
-      [WorkoutTrackingTopics.workoutVoidedV1]: () => acl.workoutVoided(envelope, context),
-    }[topic];
+      [WorkoutTrackingTopics.workoutRecordedV1]: () => acl.workoutRecorded(data, context),
+      [WorkoutTrackingTopics.workoutCorrectedV1]: () => acl.workoutCorrected(data, context),
+      [WorkoutTrackingTopics.workoutVoidedV1]: () => acl.workoutVoided(data, context),
+    }[pattern as Topic];
     await handle();
     return { id, acked: channel.ack.mock.calls.length === 1, nack: channel.nack.mock.calls[0] as [unknown, boolean, boolean] | undefined };
   }
@@ -261,11 +280,25 @@ describe('Training Progress (e2e)', () => {
         input: { memberId: 'miss@example.com', metric: 'CALORIES', target: 99999, startsOn: '2026-10-01T00:00:00Z', endsOn: '2026-12-01T00:00:00Z' },
       });
 
-      expect(await app.get(MissEndedGoalsJob).run(new Date('2026-12-01T12:00:00Z'))).toBe(0);
-      expect(await app.get(MissEndedGoalsJob).run(new Date('2026-12-02T00:00:01Z'))).toBeGreaterThanOrEqual(1);
+      const missEndedGoals = (now: string) => app.get(CommandBus).execute(new MissEndedGoalsCommand(new Date(now)));
+      expect(await missEndedGoals('2026-12-01T12:00:00Z')).toBe(0);
+      expect(await missEndedGoals('2026-12-02T00:00:01Z')).toBeGreaterThanOrEqual(1);
+      expect(await missEndedGoals('2026-12-02T00:00:01Z')).toBe(0); // a second trigger changes nothing
 
       const { data } = await graphql<{ member: { trainingGoals: { status: string }[] } }>(GOALS, { id: 'miss@example.com' });
       expect(data.member.trainingGoals).toEqual([expect.objectContaining({ status: 'MISSED' })]);
+    });
+
+    it("routes the schedule trigger, a structured-mode CloudEvent, to Miss Ended Goals, and acks it", async () => {
+      const channel = { ack: vi.fn(), nack: vi.fn() };
+      const message = { content: Buffer.from('') };
+      const trigger = { specversion: '1.0', id: uuidv7(), source: '/scheduler', type: ScheduleTriggers.types.missEndedGoalsV1, time: new Date().toISOString() };
+      const { pattern, data } = new CloudEventDeserializer().deserialize(trigger, { contentType: 'application/cloudevents+json; charset=utf-8' });
+      expect(pattern).toBe(ScheduleTriggers.types.missEndedGoalsV1);
+
+      await app.get(ScheduleTriggersController).missEndedGoals(data, { getChannelRef: () => channel, getMessage: () => message });
+
+      expect(channel.ack).toHaveBeenCalledWith(message);
     });
   });
 

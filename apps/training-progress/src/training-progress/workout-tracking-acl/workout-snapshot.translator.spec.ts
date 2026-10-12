@@ -1,14 +1,20 @@
+import type { CloudEventV1 } from 'cloudevents';
 import { InvalidIntegrationEvent } from './invalid-integration-event.js';
 import { WorkoutSnapshotTranslator } from './workout-snapshot.translator.js';
 
-const envelope = (payload: Record<string, unknown>) => ({
-  id: '01a0f335-aae8-7027-b795-ca9dab21e44d',
-  topic: 'workout-tracking.integration.workout-recorded.v1',
-  key: 'ada@example.com',
-  headers: {},
-  createdAt: 0,
-  payload,
-});
+const cloudEvent = (data: Record<string, unknown>, attributes: Record<string, unknown> = {}) =>
+  ({
+    specversion: '1.0',
+    id: '01a0f335-aae8-7027-b795-ca9dab21e44d',
+    source: '/workout-tracking',
+    type: 'workout-tracking.integration.workout-recorded.v1',
+    subject: data.workoutId,
+    time: '2026-10-08T09:30:12.000Z',
+    datacontenttype: 'application/json',
+    partitionkey: 'ada@example.com',
+    data,
+    ...attributes,
+  }) as CloudEventV1<unknown>;
 
 const snapshot = {
   workoutId: '0199c3a2-0000-7000-8000-000000000101',
@@ -27,7 +33,7 @@ describe('WorkoutSnapshotTranslator', () => {
   const translator = new WorkoutSnapshotTranslator();
 
   it("translates the snapshot into this context's types", async () => {
-    const workout = await translator.translate(envelope(snapshot));
+    const workout = await translator.translate(cloudEvent(snapshot));
 
     expect(workout.loggedWorkoutId.value).toBe(snapshot.workoutId);
     expect(workout.memberId.value).toBe('ada@example.com');
@@ -37,13 +43,25 @@ describe('WorkoutSnapshotTranslator', () => {
     expect(workout.sourceRevision.value).toBe(1);
   });
 
-  it('refuses a payload that breaks the contract', async () => {
-    await expect(translator.translate(envelope({ ...snapshot, discipline: 'SWIMMING' }))).rejects.toThrow(InvalidIntegrationEvent);
-    await expect(translator.translate(envelope({ ...snapshot, revision: 0 }))).rejects.toThrow(InvalidIntegrationEvent);
-    await expect(translator.translate(envelope({}))).rejects.toThrow(InvalidIntegrationEvent);
+  it('refuses data that breaks the contract', async () => {
+    await expect(translator.translate(cloudEvent({ ...snapshot, discipline: 'SWIMMING' }))).rejects.toThrow(InvalidIntegrationEvent);
+    await expect(translator.translate(cloudEvent({ ...snapshot, revision: 0 }))).rejects.toThrow(InvalidIntegrationEvent);
+    await expect(translator.translate(cloudEvent({}))).rejects.toThrow(InvalidIntegrationEvent);
   });
 
-  it('refuses an envelope without an id: the inbox needs it', async () => {
-    await expect(translator.translate({ ...envelope(snapshot), id: '' })).rejects.toThrow(InvalidIntegrationEvent);
+  it('refuses a CloudEvent without an id, which the inbox needs, though the SDK would make one up', async () => {
+    await expect(translator.translate(cloudEvent(snapshot, { id: '' }))).rejects.toThrow('the CloudEvent has no id');
+    await expect(translator.translate(cloudEvent(snapshot, { id: undefined }))).rejects.toThrow('the CloudEvent has no id');
+  });
+
+  it('refuses what breaks the CloudEvents specification', async () => {
+    await expect(translator.translate(cloudEvent(snapshot, { specversion: undefined }))).rejects.toThrow('not a CloudEvent 1.0');
+    await expect(translator.translate(cloudEvent(snapshot, { specversion: '0.3' }))).rejects.toThrow('not a CloudEvent 1.0');
+    await expect(translator.translate(cloudEvent(snapshot, { time: 'yesterday' }))).rejects.toThrow('time must match format "date-time"');
+    await expect(translator.translate(cloudEvent(snapshot, { source: undefined }))).rejects.toThrow("must have required property 'source'");
+  });
+
+  it("refuses a CloudEvent that isn't from Workout Tracking", async () => {
+    await expect(translator.translate(cloudEvent(snapshot, { source: '/billing' }))).rejects.toThrow('the source is /billing, not /workout-tracking');
   });
 });

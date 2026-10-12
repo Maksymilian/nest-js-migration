@@ -64,6 +64,27 @@
       "arguments": {
         "x-queue-type": "quorum"
       }
+    },
+    {
+      "name": "training-progress.schedule",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "training-progress.schedule.dlq"
+      }
+    },
+    {
+      "name": "training-progress.schedule.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     }
   ],
   "bindings": [

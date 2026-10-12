@@ -1,0 +1,14 @@
+{
+  "name": "fitness-scheduler",
+  "private": true,
+  "description": "Publishes one schedule trigger to RabbitMQ and exits; Kubernetes CronJobs run it. Same versions as the root package.json.",
+  "type": "module",
+  "packageManager": "pnpm@12.10.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "amqplib": "2.2.0",
+    "cloudevents": "10.0.0"
+  }
+}

@@ -103,7 +103,7 @@ In this context, "workout" on its own always means a **logged workout** (as in "
 |---|---|---|
 | **Keep Personal Records** | Whenever a workout is logged, revised or stops counting, consider or recalculate the member's personal records in its discipline. | `KeepPersonalRecordsPolicy` |
 | **Check Goal Achievement** | Whenever a workout is logged or revised, or a goal is set, record goal progress on each affected active goal. | `CheckGoalAchievementPolicy` |
-| **Miss Ended Goals** | Every day, miss the active goals whose grace period has ended. | `MissEndedGoalsJob` |
+| **Miss Ended Goals** | Every day, on its schedule trigger, miss the active goals whose grace period has ended. | `MissEndedGoalsCommand`, `ScheduleTriggersController` |
 
 ## Notifications context (generic subdomain)
 
@@ -116,13 +116,26 @@ No domain model; a thin layer over `@nestjs/mail`. It conforms to Training Progr
 | **Notify Personal Record** | Send a notification when a personal record is set. | `NotifyPersonalRecordHandler` | |
 | **Notify Goal Achieved** | Send a notification when a training goal is achieved. | `NotifyGoalAchievedHandler` | |
 
+## Telegram bot (an interface of Training Progress)
+
+Members read their progress and manage their training goals in a Telegram chat. The bot uses Training Progress' terms: each bot command is named after what it shows or does. Signing in stands in for Identity (generic) until an identity provider exists.
+
+| Term | Meaning | Code | Don't say |
+|---|---|---|---|
+| **Telegram Chat** | A private chat between a member and the platform's Telegram bot. Signed in as at most one member at a time. | `TelegramChats`, `telegram_chats` table | user, account, conversation |
+| **Sign In** | Tie a Telegram chat to a member, with `/sign_in` and the member id: until Identity exists, the member's email address, not verified, as everywhere else. Signing in again replaces the member. | `/sign_in`, `TelegramChats.signIn()` | register, link, connect, pair, log in |
+| **Sign Out** | Untie a Telegram chat from its member. | `/sign_out`, `TelegramChats.signOut()` | unlink, disconnect, log out |
+| **Bot Command** | A slash command in a Telegram chat: `/training_log`, `/progress_summary`, `/streak`, `/personal_records`, `/training_goals`. Each one but `/start`, `/sign_in` and `/sign_out` needs a signed-in chat. | `TelegramBot.command()`, `*BotCommands` classes | |
+
 ## Integration and building blocks
 
 | Term | Meaning | Code |
 |---|---|---|
 | **Domain Event** | A business fact that happened inside a context, raised by an aggregate, named in the past tense. Internal to its context. | `libs/ddd` `DomainEvent`; topics `<context>.domain.<event>.v<n>` |
-| **Integration Event** | A fact a context publishes for other contexts, mapped from a domain event into the published language. Versioned. | Topics `<context>.integration.<event>.v<n>` |
-| **Published Language** | A context's integration events: topic names and payloads. Owned by the upstream context. | `libs/workout-tracking-contracts`, `training-progress/published-language/` |
+| **Integration Event** | A fact a context publishes for other contexts, mapped from a domain event into the published language. Versioned. Between services, it travels as a CloudEvent. | Topics `<context>.integration.<event>.v<n>` |
+| **CloudEvent** | An integration event in the CloudEvents 1.0 format, as it travels between services: attributes (`id`, `source`, `type` = the topic, `subject`, `time`, `partitionkey`) around the payload, its `data`. | `cloudevents` SDK `CloudEvent`; `WORKOUT_TRACKING_SOURCE`; `CloudEventSerializer`, `CloudEventDeserializer` |
+| **Published Language** | A context's integration events: topic names and payloads, and the CloudEvents `source` of those that leave the service. Owned by the upstream context. | `libs/workout-tracking-contracts`, `training-progress/published-language/` |
+| **Schedule Trigger** | A CloudEvent that a Kubernetes CronJob publishes at a set time to a service's schedule queue, to start time-based work such as Miss Ended Goals. Carries no data; one instance handles it. | `scripts/scheduler/`, `ScheduleTriggers`; types `<context>.schedule.<policy>.v<n>` |
 | **Policy** | A reaction to a domain event ("whenever X, then Y") that changes one aggregate per transaction. | `*Policy` |
 | **Anticorruption Layer** | The part of Training Progress that validates Workout Tracking's integration events and translates them into its own language and commands. | `workout-tracking-acl/` |
 | **Outbox** | Where a context stores its domain and integration events in the same transaction as the change, until they're delivered. | `@nestjs/outbox`, `nest_outbox.messages` |

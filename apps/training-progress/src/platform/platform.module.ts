@@ -8,7 +8,6 @@ import { DrizzleModule, getDrizzleToken } from '@nestjs/drizzle';
 import { GraphQLModule } from '@nestjs/graphql';
 import { OutboxModule, OutboxStorage } from '@nestjs/outbox';
 import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
-import { ScheduleModule } from '@nestjs/schedule';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { CacheInvalidationHandler } from './cache/cache-invalidation.handler.js';
 import { ReadCache } from './cache/read-cache.js';
@@ -18,18 +17,19 @@ import type { Database } from './database/database.js';
 import { Transactions } from './database/transactions.js';
 import { DomainErrorFilter } from './errors/domain-error.filter.js';
 import { HealthModule } from './health/health.module.js';
-import { InboxPruningJob } from './jobs/inbox-pruning.job.js';
 import { DeadLetterTopology } from './messaging/dead-letter-topology.js';
 import { DomainEventPublisher } from './outbox/domain-event-publisher.js';
 import { OutboxDomainEventPublisher } from './outbox/outbox-domain-event-publisher.js';
 import { RouteTable } from './outbox/route-table.js';
 import { trainingProgressRoutes } from './outbox/routes.js';
 import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
+import { TelegramModule } from './telegram/telegram.module.js';
 
 /**
  * Technical plumbing of the service: configuration, the database, the outbox (domain events to
  * the policies, the published language to Notifications, all in-process), Redis, GraphQL,
- * scheduling, RabbitMQ topology, validation, error mapping, health checks. No domain concepts.
+ * scheduling, RabbitMQ topology, validation, error mapping, health checks, the Telegram bot. No
+ * domain concepts.
  */
 @Global()
 @Module({
@@ -41,11 +41,20 @@ import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
       validate: validateEnvironment,
     }),
     CqrsModule.forRoot(),
-    ScheduleModule.forRoot(),
     DrizzleModule.forRootAsync({
       inject: [ConfigService],
       // A pg pool on PostgreSQL instance 2, closed after the relay drained on shutdown.
-      useFactory: (config: ConfigService<Environment, true>) => ({ drizzle, connection: config.get('DATABASE_URL', { infer: true }) }),
+      useFactory: (config: ConfigService<Environment, true>) => ({
+        drizzle,
+        connection: {
+          connectionString: config.get('DATABASE_URL', { infer: true }),
+          min: 2,
+          max: 25,
+          connectionTimeoutMillis: 5_000,
+          statement_timeout: 15_000,
+          application_name: 'training-progress',
+        },
+      }),
     }),
     OutboxModule.forRootAsync({
       inject: [ConfigService],
@@ -69,6 +78,7 @@ import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
     }),
     HealthModule,
     OutboxAdminModule,
+    TelegramModule,
   ],
   providers: [
     {
@@ -85,13 +95,12 @@ import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
     ReadCache,
     CacheInvalidationHandler,
     DeadLetterTopology,
-    InboxPruningJob,
     {
       provide: APP_PIPE,
       useValue: new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     },
     { provide: APP_FILTER, useClass: DomainErrorFilter },
   ],
-  exports: [Transactions, DomainEventPublisher, ReadCache],
+  exports: [Transactions, DomainEventPublisher, ReadCache, TelegramModule],
 })
 export class PlatformModule {}

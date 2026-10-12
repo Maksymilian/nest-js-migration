@@ -7,12 +7,14 @@ import { ClientProxyTransport, OutboxModule, OutboxStorage } from '@nestjs/outbo
 import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { isPublishedLanguage, PUBLISHED_LANGUAGE_EXCHANGE } from '../workout-tracking/published-language/broker.js';
+import { toCloudEvent } from '../workout-tracking/published-language/cloud-event.mapper.js';
 import { workoutTrackingRoutes } from '../workout-tracking/published-language/routes.js';
 import { type Environment, validateEnvironment } from './config/environment.js';
 import type { Database } from './database/database.js';
 import { Transactions } from './database/transactions.js';
 import { HealthModule } from './health/health.module.js';
 import { DomainErrorFilter } from './http/domain-error.filter.js';
+import { CloudEventSerializer } from './messaging/cloud-event.serializer.js';
 import { DomainEventPublisher } from './outbox/domain-event-publisher.js';
 import { OutboxDomainEventPublisher } from './outbox/outbox-domain-event-publisher.js';
 import { RouteTable } from './outbox/route-table.js';
@@ -39,7 +41,13 @@ export const WORKOUT_TRACKING_BROKER = 'WORKOUT_TRACKING_BROKER';
       // A pg pool on PostgreSQL instance 1, closed after the relay drained on shutdown.
       useFactory: (config: ConfigService<Environment, true>) => ({
         drizzle,
-        connection: config.get('DATABASE_URL', { infer: true }),
+        connection: {
+          connectionString: config.get('DATABASE_URL', { infer: true }),
+          min: 2,
+          max: 25,
+          connectionTimeoutMillis: 5_000,
+          application_name: 'workout-tracking',
+        },
       }),
     }),
     OutboxModule.forRootAsync({
@@ -59,12 +67,19 @@ export const WORKOUT_TRACKING_BROKER = 'WORKOUT_TRACKING_BROKER';
                 // Survive a broker restart. The channel waits for publisher confirms, so
                 // "published" means stored by the broker.
                 persistent: true,
+                // Each message is a CloudEvent in structured content mode.
+                serializer: new CloudEventSerializer(),
               },
             }),
           },
         ]),
       ],
-      transports: { rabbitmq: ClientProxyTransport(WORKOUT_TRACKING_BROKER) },
+      transports: {
+        rabbitmq: ClientProxyTransport(WORKOUT_TRACKING_BROKER, {
+          // The topic is the routing key, and the integration event goes as a CloudEvent.
+          toPacket: (message) => ({ pattern: message.topic, data: toCloudEvent(message) }),
+        }),
+      },
       inject: [ConfigService],
       useFactory: (config: ConfigService<Environment, true>) => ({
         route: (message) => (isPublishedLanguage(message.topic) ? 'rabbitmq' : 'local'),
