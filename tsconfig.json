@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "types": [
+      "vitest/globals",
+      "node"
+    ],
+    "paths": {
+      "@app/ddd": [
+        "./libs/ddd/src/index.ts"
+      ],
+      "@app/ddd/*": [
+        "./libs/ddd/src/*"
+      ],
+      "@app/workout-tracking-contracts": [
+        "./libs/workout-tracking-contracts/src/index.ts"
+      ],
+      "@app/workout-tracking-contracts/*": [
+        "./libs/workout-tracking-contracts/src/*"
+      ]
+    }
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/workout-tracking/tsconfig.app.json"
+    },
+    {
+      "path": "./apps/training-progress/tsconfig.app.json"
+    }
+  ]
+}

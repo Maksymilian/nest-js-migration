@@ -1,0 +1,16 @@
+import { Controller, Get, Param, Query } from '@nestjs/common';
+import { QueryBus } from '@nestjs/cqrs';
+import { MemberId } from '../../../equipment/domain/values/member-id.js';
+import { ListMemberWorkoutsQuery } from '../../application/queries/list-member-workouts.query.js';
+import { ListMemberWorkoutsDto } from './dto/list-member-workouts.dto.js';
+
+@Controller({ path: 'members/:memberId/workouts', version: '1' })
+export class MemberWorkoutsController {
+  constructor(private readonly queryBus: QueryBus) {}
+
+  /** A member's workouts, newest first, voided ones included. */
+  @Get()
+  list(@Param('memberId') memberId: string, @Query() { limit, cursor }: ListMemberWorkoutsDto) {
+    return this.queryBus.execute(new ListMemberWorkoutsQuery(MemberId.from(memberId.toLowerCase()), limit, cursor ?? null));
+  }
+}

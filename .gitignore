@@ -147,3 +147,9 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+!.env.example
+
+# Development mail (.eml files)
+var/
+
+postman/

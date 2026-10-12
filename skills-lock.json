@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "implementing-domain-driven-design": {
+      "source": "ciembor/agent-rules-books",
+      "sourceType": "github",
+      "skillPath": "implementing-domain-driven-design/SKILL.md",
+      "computedHash": "90d14055645812c6df495efd7598b0e0330f9b33e7e9e8ecb72c5df4ea834d6e"
+    }
+  }
+}
