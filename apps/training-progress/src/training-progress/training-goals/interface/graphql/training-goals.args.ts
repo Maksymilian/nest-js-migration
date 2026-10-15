@@ -1,5 +1,5 @@
 import { ArgsType, Field } from '@nestjs/graphql';
-import { IsEnum, IsOptional } from 'class-validator';
+import { IsDate, IsEnum, IsOptional } from 'class-validator';
 import { GoalStatusEnum } from './goal-status.enum.js';
 
 @ArgsType()
@@ -8,4 +8,9 @@ export class TrainingGoalsArgs {
   @IsOptional()
   @IsEnum(GoalStatusEnum)
   status?: GoalStatusEnum;
+
+  @Field(() => Date, { nullable: true, description: 'Only the goals set at or after this moment.' })
+  @IsOptional()
+  @IsDate()
+  setSince?: Date;
 }

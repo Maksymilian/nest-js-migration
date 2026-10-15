@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "0199c3a2-0000-7000-8000-00000000c002",
     "name": "Training Progress (GraphQL)",
-    "description": "Training Progress' external GraphQL API at /graphql: a member's training log, progress summaries, streak, personal records and training goals.\n\nUntil Identity exists, a member is chosen with `member(id:)`, and the id is their email address. Liquibase seeds two active goals: Ada cycles 200 km in October 2026, Grace does 12 workouts by the end of 2026. Record workouts with the Workout Tracking (REST) collection first: they arrive here through RabbitMQ.",
+    "description": "Training Progress' external GraphQL API at /graphql: a member's training log, progress summaries, streak, personal records and training goals.\n\nUntil Identity exists, a member is chosen with `member(id:)`, and the id is their email address. Liquibase seeds two active goals: Ada cycles 200 km in October 2026, Grace does 12 workouts by the end of 2026. Record workouts with the Workout Tracking (REST) collection first: they arrive here through RabbitMQ.\n\nPast RATE_LIMIT_PER_MINUTE requests a minute from one caller, the response is 429 and a root field fails with TOO_MANY_REQUESTS (extensions httpStatus 429 and retryAfter); a query field that takes longer than QUERY_TIMEOUT_MS fails with TIMEOUT (httpStatus 504). See section 16 of docs/architecture.md.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -28,6 +28,10 @@
     },
     {
       "key": "endCursor",
+      "value": ""
+    },
+    {
+      "key": "setSince",
       "value": ""
     }
   ],
@@ -365,6 +369,60 @@
               ]
             },
             "description": "Workouts already logged in the goal period count towards the new goal."
+          }
+        },
+        {
+          "name": "Training goals set in the last week",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('setSince', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responds 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has no errors', () => pm.expect(pm.response.json().errors).to.be.undefined);",
+                  "pm.test('lists the goal just set', () => {",
+                  "  const ids = pm.response.json().data.member.trainingGoals.map((goal) => goal.id);",
+                  "  pm.expect(ids).to.include(pm.collectionVariables.get('trainingGoalId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query TrainingGoalsSetSince($id: ID!, $setSince: DateTime) {\n  member(id: $id) {\n    trainingGoals(setSince: $setSince) { id metric target discipline startsOn endsOn status progress }\n  }\n}\n",
+                "variables": "{\n  \"id\": \"{{memberId}}\",\n  \"setSince\": \"{{setSince}}\"\n}"
+              }
+            },
+            "url": {
+              "raw": "{{trainingProgressUrl}}/graphql",
+              "host": [
+                "{{trainingProgressUrl}}"
+              ],
+              "path": [
+                "graphql"
+              ]
+            },
+            "description": "Only the goals set at or after setSince: a week ago, from the pre-request script. Combine it with status: ACTIVE to get the active goals set this week."
           }
         },
         {

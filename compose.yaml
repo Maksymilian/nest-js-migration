@@ -1,6 +1,8 @@
 # Infrastructure only (docs/architecture.md, section 14): the two services run on the host
-# with `pnpm start:dev <app>`. `docker compose up -d --wait` starts the databases, Redis and
+# with `pnpm start:dev:<app>`. `docker compose up -d --wait` starts the databases, Redis and
 # RabbitMQ. Liquibase isn't part of it: scripts/database/liquibase.sh migrates the databases.
+# `--profile observability` adds Grafana Alloy, Loki, Tempo, Prometheus and Grafana (section 15),
+# `--profile faults` adds Toxiproxy (section 16).
 name: fitness-platform
 
 services:
@@ -66,7 +68,107 @@ services:
       timeout: 10s
       retries: 30
 
+  # Toxiproxy (section 16): faults between a service and its PostgreSQL, Redis or RabbitMQ, for local
+  # tests. One proxy per connection (infrastructure/toxiproxy/proxies.json); a service goes through
+  # them when started with scripts/faults/start-through-toxiproxy.sh, and scripts/faults/fault.sh
+  # injects and clears the faults through the API on http://localhost:8474.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0
+    profiles: [faults]
+    command: ['-host=0.0.0.0', '-config=/etc/toxiproxy/proxies.json']
+    ports:
+      - '127.0.0.1:8474:8474'
+      - '127.0.0.1:25433:25433' # workout-tracking-db
+      - '127.0.0.1:25672:25672' # workout-tracking-rabbitmq
+      - '127.0.0.1:25434:25434' # training-progress-db
+      - '127.0.0.1:26379:26379' # training-progress-redis
+      - '127.0.0.1:25673:25673' # training-progress-rabbitmq
+    volumes:
+      - ./infrastructure/toxiproxy/proxies.json:/etc/toxiproxy/proxies.json:ro
+    healthcheck:
+      test: ['CMD', '/toxiproxy-cli', 'list']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on: [workout-tracking-db, training-progress-db, redis, rabbitmq]
+
+  # Grafana Alloy (section 15): the services' OpenTelemetry (OTLP/HTTP on 4318, only with Basic Auth:
+  # infrastructure/alloy/htpasswd, from scripts/observability/telemetry-credentials.sh), RabbitMQ's
+  # and Redis' metrics (scraped), and their containers' logs. UI on http://localhost:12345
+  alloy:
+    image: grafana/alloy:v1.20.1
+    profiles: [observability]
+    command: ['run', '--server.http.listen-addr=0.0.0.0:12345', '--storage.path=/var/lib/alloy/data', '/etc/alloy/config.alloy']
+    ports:
+      - '127.0.0.1:4318:4318'
+      - '127.0.0.1:12345:12345'
+    volumes:
+      - ./infrastructure/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # No file, no Alloy: Compose stops instead of creating a directory in its place.
+      - type: bind
+        source: ./infrastructure/alloy/htpasswd
+        target: /etc/alloy/htpasswd
+        read_only: true
+        bind:
+          create_host_path: false
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy:/var/lib/alloy/data
+    depends_on: [loki, tempo, prometheus]
+
+  # Logs (section 15), from Alloy over OTLP and the Docker API. Single binary, local storage: the
+  # image's own configuration.
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: [observability]
+    volumes:
+      - loki:/loki
+
+  # Traces (section 15), from Alloy over OTLP; span metrics and the service graph go to Prometheus.
+  tempo:
+    image: grafana/tempo:3.1.0
+    profiles: [observability]
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./infrastructure/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo:/var/tempo
+
+  # Metrics (section 15): written by Alloy and Tempo (remote write); Grafana reads them.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus:/prometheus
+
+  # Dashboards and alerting (section 15) on http://localhost:3000, as admin with GRAFANA_ADMIN_PASSWORD
+  # (.env). Data sources, dashboards and alert rules are provisioned from infrastructure/grafana/.
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [observability]
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    depends_on: [loki, tempo, prometheus]
+
 volumes:
   workout-tracking-db:
   training-progress-db:
   rabbitmq:
+  alloy:
+  loki:
+  tempo:
+  prometheus:
+  grafana:

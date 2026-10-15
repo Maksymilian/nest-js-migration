@@ -1,5 +1,6 @@
 import { QueryBus } from '@nestjs/cqrs';
 import { Args, Int, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
+import { Timeout } from '@nestjs/resilience';
 import { TrainingPeriod } from '../../../calendar/domain/values/training-period.js';
 import { PersonalRecordsQuery } from '../../../personal-records/application/queries/personal-records.query.js';
 import { PersonalRecordsArgs } from '../../../personal-records/interface/graphql/personal-records.args.js';
@@ -20,7 +21,11 @@ import { MemberId } from '../../domain/values/member-id.js';
 import { MemberArgs } from './member.args.js';
 import { MemberType } from './member.type.js';
 
-/** The `Member` root type and its field resolvers: each one dispatches a query of its module. */
+/**
+ * The `Member` root type and its field resolvers: each one dispatches a query of its module, and
+ * fails with TIMEOUT after QUERY_TIMEOUT_MS (section 16). @Timeout() goes on each field resolver:
+ * on the class, it would only reach `member`, which reads nothing.
+ */
 @Resolver(() => MemberType)
 export class MemberResolver {
   constructor(private readonly queryBus: QueryBus) {}
@@ -31,11 +36,13 @@ export class MemberResolver {
   }
 
   @ResolveField(() => LoggedWorkoutConnectionType, { description: 'Counting workouts only, newest first.' })
+  @Timeout()
   trainingLog(@Parent() member: MemberType, @Args() { first, after, discipline }: TrainingLogArgs) {
     return this.queryBus.execute(new TrainingLogQuery(MemberId.from(member.id), first, after ?? null, disciplineOf(discipline)));
   }
 
   @ResolveField(() => ProgressSummaryType)
+  @Timeout()
   progressSummary(@Parent() member: MemberType, @Args() { period, date, discipline }: ProgressSummaryArgs) {
     return this.queryBus.execute(
       new ProgressSummaryQuery(MemberId.from(member.id), TrainingPeriod.periodKind(period), date ?? new Date(), disciplineOf(discipline)),
@@ -43,18 +50,21 @@ export class MemberResolver {
   }
 
   @ResolveField(() => Int, { description: 'Consecutive active days ending today or yesterday (UTC).' })
+  @Timeout()
   streak(@Parent() member: MemberType) {
     return this.queryBus.execute(new StreakQuery(MemberId.from(member.id), new Date()));
   }
 
   @ResolveField(() => [PersonalRecordType])
+  @Timeout()
   personalRecords(@Parent() member: MemberType, @Args() { discipline }: PersonalRecordsArgs) {
     return this.queryBus.execute(new PersonalRecordsQuery(MemberId.from(member.id), disciplineOf(discipline)));
   }
 
   @ResolveField(() => [TrainingGoalType])
-  trainingGoals(@Parent() member: MemberType, @Args() { status }: TrainingGoalsArgs) {
-    return this.queryBus.execute(new TrainingGoalsQuery(MemberId.from(member.id), status ? GoalStatus.from(status) : null));
+  @Timeout()
+  trainingGoals(@Parent() member: MemberType, @Args() { status, setSince }: TrainingGoalsArgs) {
+    return this.queryBus.execute(new TrainingGoalsQuery(MemberId.from(member.id), status ? GoalStatus.from(status) : null, setSince ?? null));
   }
 }
 

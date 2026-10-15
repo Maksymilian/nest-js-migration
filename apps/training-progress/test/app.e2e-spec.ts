@@ -20,6 +20,8 @@ process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off'; // no poll loop: the tests drive the relay
 process.env.MAIL_TRANSPORT = 'file';
 process.env.TELEGRAM_BOT_TOKEN = ''; // the bot is off, whatever .env says: telegram.e2e-spec.ts covers it
+process.env.RATE_LIMIT_PER_MINUTE = '10000'; // whatever .env says: resilience.e2e-spec.ts covers it
+process.env.QUERY_TIMEOUT_MS = '10000';
 
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
@@ -244,6 +246,22 @@ describe('Training Progress (e2e)', () => {
       const { data } = await graphql<{ member: { trainingGoals: { status: string; progress: number }[] } }>(GOALS, { id: member });
       expect(data.member.trainingGoals).toEqual([expect.objectContaining({ status: 'ACHIEVED', progress: 210000 })]);
       mailbox.assertSent({ to: member, mail: GoalAchievedMail });
+    });
+
+    it('lists only the goals set at or after setSince', async () => {
+      const member = 'set-since@example.com';
+      const GOALS_SET_SINCE = `query ($id: ID!, $setSince: DateTime) { member(id: $id) { trainingGoals(setSince: $setSince) { id } } }`;
+      const set = await graphql<{ setTrainingGoal: { id: string } }>(SET_GOAL, {
+        input: { memberId: member, metric: 'WORKOUT_COUNT', target: 5, startsOn: '2026-10-01T00:00:00Z', endsOn: '2027-01-01T00:00:00Z' },
+      });
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const inAnHour = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+      const sinceWeekAgo = await graphql<{ member: { trainingGoals: { id: string }[] } }>(GOALS_SET_SINCE, { id: member, setSince: weekAgo });
+      expect(sinceWeekAgo.data.member.trainingGoals).toEqual([{ id: set.data.setTrainingGoal.id }]);
+
+      const sinceInAnHour = await graphql<{ member: { trainingGoals: { id: string }[] } }>(GOALS_SET_SINCE, { id: member, setSince: inAnHour });
+      expect(sinceInAnHour.data.member.trainingGoals).toEqual([]);
     });
 
     it('refuses an invalid goal with INVARIANT_VIOLATION and malformed input with BAD_REQUEST', async () => {

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDrizzle } from '@nestjs/drizzle';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gte } from 'drizzle-orm';
 import type { Database } from '../../../platform/database/database.js';
 import { trainingGoals } from '../../../platform/database/schema.js';
 import { TrainingGoalQueries } from '../application/queries/training-goal-queries.js';
@@ -12,11 +12,18 @@ export class DrizzleTrainingGoalQueries extends TrainingGoalQueries {
     super();
   }
 
-  async ofMember(memberId: string, status: string | null): Promise<TrainingGoalRepresentation[]> {
+  /** The (member_id, status) index finds the member's goals; set_at is then checked on those few rows. */
+  async ofMember(memberId: string, status: string | null, setSince: Date | null): Promise<TrainingGoalRepresentation[]> {
     const rows = await this.db
       .select()
       .from(trainingGoals)
-      .where(and(eq(trainingGoals.memberId, memberId), status ? eq(trainingGoals.status, status) : undefined))
+      .where(
+        and(
+          eq(trainingGoals.memberId, memberId),
+          status ? eq(trainingGoals.status, status) : undefined,
+          setSince ? gte(trainingGoals.setAt, setSince) : undefined,
+        ),
+      )
       .orderBy(asc(trainingGoals.startsOn), asc(trainingGoals.id));
     return rows.map((row) => ({
       id: row.id,

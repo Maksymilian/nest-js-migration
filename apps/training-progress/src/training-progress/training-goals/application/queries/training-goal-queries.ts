@@ -2,5 +2,5 @@ import type { TrainingGoalRepresentation } from '../training-goal.representation
 
 /** Read port: a member's training goals, and a goal's progress, read straight from SQL. */
 export abstract class TrainingGoalQueries {
-  abstract ofMember(memberId: string, status: string | null): Promise<TrainingGoalRepresentation[]>;
+  abstract ofMember(memberId: string, status: string | null, setSince: Date | null): Promise<TrainingGoalRepresentation[]>;
 }

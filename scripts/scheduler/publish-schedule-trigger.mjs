@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Publishes one schedule trigger to RabbitMQ, waits for the broker to confirm it, and exits.
-// A Kubernetes CronJob runs it at the trigger's time (infrastructure/kubernetes/); run it by hand
-// to start a policy now:
+// A Kubernetes CronJob runs it at the trigger's time; run it by hand to start a policy now:
 //   node scripts/scheduler/publish-schedule-trigger.mjs miss-ended-goals
 //   docker run --rm --network host fitness-scheduler miss-ended-goals
 // RABBITMQ_URL picks the broker (default: the local Docker Compose one). The trigger is a

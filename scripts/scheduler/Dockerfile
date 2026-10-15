@@ -1,5 +1,5 @@
-# The scheduler: publishes one schedule trigger and exits, for Kubernetes CronJobs
-# (infrastructure/kubernetes/). Build it from this folder:
+# The scheduler: publishes one schedule trigger and exits, for Kubernetes CronJobs. Build it
+# from this folder:
 #   docker build -t fitness-scheduler scripts/scheduler
 FROM node:24-alpine AS dependencies
 WORKDIR /scheduler

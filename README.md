@@ -28,9 +28,9 @@ Liquibase (`apps/<service>/liquibase`, run in Docker by `scripts/database/liquib
 | RabbitMQ management | 15672 | `fitness` / `fitness` |
 
 ```bash
-# development, with watch mode (one terminal each)
-pnpm start:dev workout-tracking
-pnpm start:dev training-progress
+# development, with watch mode and OpenTelemetry (one terminal each)
+pnpm start:dev:workout-tracking
+pnpm start:dev:training-progress
 
 # production build
 pnpm build
@@ -100,7 +100,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
 - Health: `GET /health/live` and `GET /health/ready` on both services. Readiness is `down` without the service's PostgreSQL, and `degraded` (still 200) without RabbitMQ or Redis.
 - Outbox: `GET /internal/v1/admin/outbox/stats` and `/dead-letters` on Workout Tracking, `/internal/admin/outbox/...` on Training Progress, with the `x-admin-token` header (`ADMIN_TOKEN`). Dead letters can be requeued with `POST .../dead-letters/:id/requeue`.
 - RabbitMQ dead letters (messages that aren't structured-mode CloudEvents, invalid integration events, or ones that failed 5 deliveries): queue `training-progress.workout-tracking.dlq`. Integration events travel as [CloudEvents](https://cloudevents.io) 1.0 (section 5.4 of `docs/architecture.md`).
-- Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs in `infrastructure/kubernetes/` publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
+- Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
 
   ```bash
   node scripts/scheduler/publish-schedule-trigger.mjs miss-ended-goals
@@ -110,6 +110,35 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
   ```
 
   Triggers that failed 5 deliveries are in `training-progress.schedule.dlq`.
+
+### Observability: OpenTelemetry and the Grafana stack
+
+The services send traces, metrics and logs over OTLP to Grafana Alloy, which requires Basic Auth and sends them to Tempo, Prometheus and Loki; Alloy also scrapes RabbitMQ and Redis and collects their logs. Grafana shows them, with the **Fitness platform** dashboard and the alert rules (section 15 of `docs/architecture.md`).
+
+```bash
+cp .env.example .env                                    # GRAFANA_ADMIN_PASSWORD
+scripts/observability/telemetry-credentials.sh          # Alloy's htpasswd, and the Authorization header in apps/*/.env
+docker compose --profile observability up -d            # + Alloy (localhost:4318), Tempo, Loki, Prometheus and Grafana
+pnpm start:dev:workout-tracking                         # the start scripts load the OpenTelemetry SDK
+```
+
+Grafana: http://localhost:3000 (`admin`, `GRAFANA_ADMIN_PASSWORD`) > Dashboards > Fitness platform > Fitness platform; the alert rules are in Alerting. A flow, several roundtrips of one interaction, is `session.id`: send it with `baggage: session.id=<flow id>` and type it in the dashboard's **flow** box (in Explore: `{span.session.id="<flow id>"}` in Tempo, `| session_id="<flow id>"` in Loki). To see only GraphQL, only the Telegram bot, the REST API or RabbitMQ, pick it in the dashboard's **interface** list (in Explore: `{span.interface="telegram"}` in Tempo, `| interface="telegram"` in Loki). Alloy's UI, to see its pipelines: http://localhost:12345.
+
+`LOG_CONSOLE=off` in a service's `.env` keeps its logs off the console (production).
+
+### Rate limit, timeouts and faults
+
+Each service rejects a caller past `RATE_LIMIT_PER_MINUTE` requests a minute (429, with `TOO_MANY_REQUESTS` over GraphQL), and cuts a query after `QUERY_TIMEOUT_MS` (504, or `TIMEOUT`). Toxiproxy slows down or cuts a service's connections to PostgreSQL, Redis and RabbitMQ, to see them, and other failures, in Grafana (section 16 of `docs/architecture.md`, with the scenarios to try):
+
+```bash
+docker compose --profile faults --profile observability up -d --wait   # + Toxiproxy (API on localhost:8474)
+scripts/faults/start-through-toxiproxy.sh training-progress            # instead of pnpm start:dev:training-progress
+sipts/faults/fault.sh latency training-progress-db 4000  cr            # then query: TIMEOUT after QUERY_TIMEOUT_MS
+scripts/faults/fault.sh list                                           # hang, down, up, clear: see the script
+scripts/faults/fault.sh clear
+```
+
+The dashboard's **Rate limit, timeouts and faults** row shows rejections, timeouts, failed responses and connections waiting, with each fault as an annotation.
 
 ### Database releases and rollbacks
 

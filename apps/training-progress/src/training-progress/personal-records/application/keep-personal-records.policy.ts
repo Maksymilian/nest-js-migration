@@ -1,5 +1,6 @@
+import { OnTracedOutboxMessage } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
-import { OnOutboxMessage, type OutboxHandlerContext } from '@nestjs/outbox';
+import { type OutboxHandlerContext } from '@nestjs/outbox';
 import { Transactions } from '../../../platform/database/transactions.js';
 import { DomainEventPublisher } from '../../../platform/outbox/domain-event-publisher.js';
 import { DomainTopics, type LoggedWorkoutPayloadV1 } from '../../../platform/outbox/domain-topics.js';
@@ -27,7 +28,7 @@ export class KeepPersonalRecordsPolicy {
     private readonly events: DomainEventPublisher,
   ) {}
 
-  @OnOutboxMessage(DomainTopics.workoutLoggedV1, { consumer: CONSUMER })
+  @OnTracedOutboxMessage(DomainTopics.workoutLoggedV1, { consumer: CONSUMER })
   async workoutLogged(payload: LoggedWorkoutPayloadV1, { message }: OutboxHandlerContext) {
     const memberId = MemberId.from(payload.memberId);
     const discipline = Discipline.from(payload.discipline);
@@ -41,7 +42,7 @@ export class KeepPersonalRecordsPolicy {
     });
   }
 
-  @OnOutboxMessage([DomainTopics.loggedWorkoutRevisedV1, DomainTopics.loggedWorkoutStoppedCountingV1], { consumer: CONSUMER })
+  @OnTracedOutboxMessage([DomainTopics.loggedWorkoutRevisedV1, DomainTopics.loggedWorkoutStoppedCountingV1], { consumer: CONSUMER })
   async loggedWorkoutChanged(payload: LoggedWorkoutPayloadV1, { message }: OutboxHandlerContext) {
     const memberId = MemberId.from(payload.memberId);
     const discipline = Discipline.from(payload.discipline);

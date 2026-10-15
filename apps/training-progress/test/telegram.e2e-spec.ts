@@ -22,6 +22,8 @@ process.env.TELEGRAM_BOT_TOKEN = '42:test-token';
 process.env.TELEGRAM_UPDATES = 'webhook';
 process.env.TELEGRAM_WEBHOOK_URL = 'https://progress.fitness.test/telegram/updates';
 process.env.TELEGRAM_WEBHOOK_SECRET = TELEGRAM_WEBHOOK_SECRET;
+process.env.RATE_LIMIT_PER_MINUTE = '10000'; // whatever .env says: resilience.e2e-spec.ts covers it
+process.env.QUERY_TIMEOUT_MS = '10000';
 
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');

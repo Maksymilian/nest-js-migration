@@ -1,0 +1,6 @@
+# Prometheus (docs/architecture.md, section 15) only stores: Alloy scrapes RabbitMQ and Redis and
+# converts the services' OpenTelemetry metrics, and writes them here (remote write), as does Tempo's
+# metrics generator. Grafana reads it and evaluates the alert rules.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s

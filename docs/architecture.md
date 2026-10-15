@@ -484,7 +484,8 @@ type Member {
   progressSummary(period: PeriodKind!, date: DateTime, discipline: Discipline): ProgressSummary!
   streak: Int!
   personalRecords(discipline: Discipline): [PersonalRecord!]!
-  trainingGoals(status: GoalStatus): [TrainingGoal!]!
+  "`setSince`: only the goals set at or after this moment."
+  trainingGoals(status: GoalStatus, setSince: DateTime): [TrainingGoal!]!
 }
 
 type LoggedWorkout {
@@ -635,7 +636,7 @@ At-least-once delivery everywhere; exactly-once effects on each service's own da
 
 There are no scheduled jobs in the services (no `@nestjs/schedule`): they run as several instances, and each would run the job. Time-based work starts with a **schedule trigger** instead:
 
-- **When:** a Kubernetes CronJob per trigger (`infrastructure/kubernetes/`, e.g. `miss-ended-goals.cronjob.yaml`, daily at 00:05 UTC) runs the scheduler image, built from `scripts/scheduler/`.
+- **When:** a Kubernetes CronJob per trigger (Miss Ended Goals: daily) runs the scheduler image, built from `scripts/scheduler/`.
 - **Publish:** `publish-schedule-trigger.mjs <name>` publishes one CloudEvent (`source` `/scheduler`, `type` `<context>.schedule.<policy>.v<n>`, no `data`) in structured content mode to the service's schedule queue, waits for the broker's confirmation, and exits. It's `mandatory`, so a missing queue fails the run instead of losing the trigger. The same command runs it by hand.
 - **Process:** Training Progress' second RMQ listener consumes `training-progress.schedule` (`prefetchCount: 1`, `noAck: false`, the same `CloudEventDeserializer`). RabbitMQ gives each trigger to one instance; `ScheduleTriggersController` dispatches the command with the current time (`MissEndedGoalsCommand`) and acks once it's done.
 - **Failures:** a failed run is requeued, and RabbitMQ dead-letters it to `training-progress.schedule.dlq` after 5 deliveries: an incident, found through observability. A CronJob retry can publish a trigger twice; that's harmless, because the policy is idempotent (`miss()` changes only an active goal past its grace period).
@@ -733,12 +734,21 @@ libs/
   ddd/                                 AggregateRoot, DomainEvent, DomainError, ConcurrencyConflict, Transaction, generateId
                                        (technical, no domain concepts)
   workout-tracking-contracts/          Workout Tracking's published language: topics, exchange, CloudEvents source and payload classes
+  telemetry/                           OpenTelemetry (section 15): instrumentation.ts (the SDK, loaded with node --import), flows,
+                                       the staged trace of outbox messages, the logger, the count of @nestjs/resilience's
+                                       events (technical, no domain concepts)
+infrastructure/alloy/                  Grafana Alloy: OTLP with Basic Auth (htpasswd, gitignored), RabbitMQ and Redis scraping
+infrastructure/{tempo,prometheus}/     Their configuration (Loki uses its image's own)
+infrastructure/grafana/                Provisioned data sources, dashboards and alert rules (section 15.4)
 infrastructure/rabbitmq/               definitions.json (user, exchanges, queues, bindings of section 7.2), rabbitmq.conf
-infrastructure/kubernetes/             CronJobs that publish schedule triggers (section 7.5)
+infrastructure/toxiproxy/              proxies.json: one Toxiproxy proxy per connection of a service (section 16.3)
 postman/                               workout-tracking (REST) and training-progress (GraphQL) collections
-compose.yaml                           PostgreSQL x2, Redis, RabbitMQ
+compose.yaml                           PostgreSQL x2, Redis, RabbitMQ; profiles observability (section 15) and faults (Toxiproxy)
 scripts/database/                      Liquibase in Docker: update, tag and roll back one service's database
 scripts/scheduler/                     The scheduler image: publishes one schedule trigger and exits (section 7.5)
+scripts/observability/                 Telemetry credentials (Basic Auth for Alloy)
+scripts/faults/                        Start a service through Toxiproxy; inject and clear faults (section 16.3)
+rspack.config.js                       Builds each service's instrumentation.js next to its main.js
 ```
 
 Each app also has `liquibase/` (its schema), `test/` (e2e on PGlite with the changesets) and `.env.example`.
@@ -768,6 +778,8 @@ Context, aggregate and layer boundaries are enforced in code, not only in diagra
 | `values-import-only-values-and-errors` | `domain/values/` importing anything in `apps/` except other `values/` and `errors/` | Value objects can't leak a root to the modules that import them |
 | `no-circular`, `not-to-unresolvable` | Import cycles; imports that don't resolve | Standard hygiene |
 
+TypeScript enforces the direction between apps and libraries too: each library's `tsconfig.lib.json` has `rootDir: ./src`, so a library that imports an app, or another library, doesn't compile (TS6059, file not under `rootDir`); apps keep the repository as their `rootDir`, and import libraries. `pnpm typecheck` compiles every app and library on its own (`tsc --noEmit -p`), and runs in `pnpm lint`: `nest build` compiles with Rspack and SWC, which don't check types.
+
 What isn't restricted, on purpose: `application/` and `interface/` may import other modules of the same context (a use case may read one aggregate to change another; a policy handles another module's domain events; the `members` resolver composes queries). One aggregate per transaction is checked in review and in tests, not by the import graph. `interface/` may import `domain/values/` to build commands (the ACL builds `LoggedWorkoutId`, `Discipline` and so on).
 
 **Not adopted, on purpose:** a package per bounded context (pnpm workspace packages with `exports`), and TypeScript project references beyond the solution-style root `tsconfig.json` that `nest generate app` writes (each app is still built by the Nest CLI, not with `tsc -b`). Here the context boundary is already a service boundary (one Nest app per core or supporting context), and Nest CLI monorepo mode, which this project uses, composes `apps/` and `libs/` through `tsconfig` `paths` and builds each app with its own builder. oxlint's `no-restricted-imports` was considered and rejected: it matches import strings instead of resolved files, and when two `overrides` match a file, the later one replaces the earlier one's rule options, so a context rule and a layer rule can't both apply to the same file (checked with oxlint 1.87).
@@ -788,8 +800,12 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Calendar (generic) | `date-fns` | ISO weeks and period boundaries without hand-written date arithmetic |
 | Cache | `@nestjs/cache-manager` with `@keyv/redis` | Official recipe |
 | Health | `@nestjs/terminus` | Official recipe |
+| Rate limit | `@nestjs/throttler` ([`security/rate-limiting.md`](nestjs/security/rate-limiting.md)) | Official recipe; in memory, so per instance (section 16.1) |
+| Timeouts | `@nestjs/resilience` ([`reliability/resilience.md`](nestjs/reliability/resilience.md)) | Official package: `@Timeout()` on entrypoints, mapped to 504 and GraphQL's `TIMEOUT`, and events on diagnostics channels that `@app/telemetry` counts. Retries, circuit breakers and bulkheads come with it (section 16.5) |
+| Fault injection (local) | [Toxiproxy](https://github.com/Shopify/toxiproxy) in Compose | The Nest docs have no recipe. A TCP proxy per connection, driven by an API: latency, a dependency that stops answering or is down, without touching the services' code |
 | Validation | `class-validator`, `class-transformer` | Official recipe |
 | Configuration | `@nestjs/config` | Official recipe |
+| Observability | OpenTelemetry SDK for Node.js (`@app/telemetry`); Grafana Alloy (OTLP with Basic Auth, RabbitMQ and Redis scraping), Tempo, Loki, Prometheus and Grafana | The OpenTelemetry standard: the services know no vendor, and the stack is open source and runs in Compose. `@nestjs/observe` ([`observability/`](nestjs/observability/overview.md)) is NestJS' own platform, with its own protocol and `x-request-id` propagation |
 | Scheduled work | Kubernetes CronJobs publishing schedule triggers (`scripts/scheduler/`), no `@nestjs/schedule` | The services run as several instances: Kubernetes decides when, and RabbitMQ gives each trigger to one instance. Only Miss Ended Goals; stale messages are incidents for observability, not for a cleanup job |
 | Architecture check | `dependency-cruiser`, run with pnpm | The Nest docs have no recipe for import boundaries. It checks the resolved import graph (including `.js` → `.ts` under `nodenext` and the `@app/*` aliases), and its rules compose, which oxlint's overrides don't (section 11.1) |
 | Tests | Vitest with SWC (`unplugin-swc`, [`recipes/swc.md`](nestjs/recipes/swc.md)), PGlite | Aggregate tests as given/when/then on domain events; ACL, cache and filter tests; e2e tests per service on PGlite with the Liquibase changesets, the relay driven with `runOnce()`, as in the outbox docs' Testing section |
@@ -823,3 +839,126 @@ Every building block is generated with the Nest CLI (see `CLAUDE.md`). Each mile
 | 6 | Member contacts | **Decided:** until Identity exists, a member id is the member's email address, not verified; Notifications' development adapter sends to it |
 | 7 | Publisher confirms | **Settled:** Nest's RMQ client waits for publisher confirms (section 7.1) |
 | 8 | Template leftovers | **Done:** `@nestjs/observe`, `@nestjs/mau` and the `GET /` controller are gone |
+
+## 15. Observability
+
+Both services speak OpenTelemetry only; the Grafana stack stores, presents and alerts on it. Everything runs in Docker Compose's `observability` profile.
+
+```
+service --OTLP/HTTP + Basic Auth--> Grafana Alloy --traces--> Tempo ----span metrics, service graph--+
+                                                  --logs----> Loki                                  |
+                                                  --metrics-> Prometheus <---------------------------+
+RabbitMQ (Prometheus plugin), Redis (INFO) <--scraped by Alloy; their container logs --> Alloy --> Loki
+                                       Grafana: data sources, dashboards and alert rules, provisioned
+```
+
+### 15.1 Instrumentation
+
+- `libs/telemetry/src/instrumentation.ts` starts the SDK before the service: `node --import ./dist/apps/<service>/instrumentation.js` (the `start:dev:<service>` and `start:prod:<service>` scripts; `rspack.config.js` builds it). It registers the ES module loader hook (`@nestjs/*` v12 are ES modules), then the automatic instrumentations of what the services use: HTTP, Express, Nest, GraphQL, pg, Redis, amqplib, undici and the Node.js runtime. Database, Redis and outbound HTTP spans only exist inside a trace, so the outbox relay's polling isn't one; the health probes aren't traced.
+- Everything goes over OTLP/HTTP, with W3C trace context and baggage. Metrics are cumulative (Prometheus'), every 10 s, with the stable HTTP conventions (`http.server.request.duration`, by `http.route`, method and status). The standard variables configure the rest: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SDK_DISABLED`; the service name defaults to the folder of `main.js`.
+- **GraphQL:** every request is `POST /graphql` to the HTTP metric, so `GraphqlOperationMetricsPlugin` (an Apollo plugin, `@Plugin()`) records `graphql.server.operation.duration` per operation: by `graphql.operation.type` and `graphql.root_fields` (the schema bounds them; operation names are the client's, without limit), and `error.type` when it fails. Introspection isn't recorded. The GraphQL instrumentation adds the spans (`allowValues: false`: argument values in the query text become `*`).
+- **Logs:** `TelemetryLogger` (Nest's `ConsoleLogger`) also emits each message as an OpenTelemetry log record, with the flow id and `logger.name` (the Nest context). Inside a trace, each message is a span of its own, `log <logger>`, a child of the active span, and its record carries that span's ids: a REST handler or a GraphQL resolver that logs twice shows two sibling log spans under its span (the Nest handler span, or `graphql.resolve <field>`), each linked to its log (Grafana opens one from the other); an error log marks its span failed. Outside a trace (startup), it's a record without a span. Where logs go is configuration only: `LOG_CONSOLE=off` (validated with the rest of the environment) stops the console output, for production where logs only go to OpenTelemetry; `OTEL_LOGS_EXPORTER=none` (and `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`) stops sending that signal; Alloy decides the destination. There is no log file.
+
+### 15.2 Technical flows (traces) and member flows
+
+- **Trace:** one roundtrip and everything it causes, across the services: span ids per step, one trace id. The outbox delivers later, outside the roundtrip, so each staged message keeps the trace context in its headers (`traceHeaders()`, in both `OutboxDomainEventPublisher`s), and the delivery continues it: `TracedTransport()` around the RabbitMQ transport (`relay <topic>`, then amqplib's producer and Training Progress' consumer span), `@OnTracedOutboxMessage()` on every in-process handler (`process <topic>`). A recording therefore reads as one trace from Workout Tracking's `POST .../recordings` to Training Progress' policies, cache invalidation and mail.
+- **Flow:** one interaction of a member that takes several roundtrips (glossary: *Flow*). Its id is OpenTelemetry's `session.id`, carried as W3C Baggage (`baggage: session.id=<flow id>`) in requests, RabbitMQ messages and outbox headers; the baggage processors put it on every span and log record. A caller sends it to group its roundtrips; without one, the roundtrip starts a new flow (`FlowMiddleware` for HTTP, `MessageFlowInterceptor` for messages). Each Telegram update is a roundtrip of its own too (`inRoundtrip()`, `telegram message` or `telegram callback_query`, with the update's id, never the chat's): with long polling there is no HTTP request to start its trace.
+- **Interface:** how an interaction reached the platform (glossary: *Interface*): `graphql`, `telegram` (the bot, by polling or the webhook), `rest`, or `rabbitmq` for a message no interaction started (a schedule trigger). It is set where the interaction enters (`InterfaceMiddleware` on `/graphql`, `/telegram` and the rest of the HTTP routes, `inInterface()` in the bot, `MessageFlowInterceptor` for messages) and travels like the flow id, as W3C Baggage (`baggage: interface=<name>`), so a message or an outbox handler keeps the interface of the request that caused it; the baggage processors put it on every span and log record. In Tempo: `{ span.interface = "telegram" }`; in Loki: `| interface="telegram"`; on the dashboard, the **interface** variable filters the trace and log panels. Metrics don't carry it: they keep their routes and GraphQL root fields.
+
+### 15.3 Grafana Alloy and transport security
+
+Alloy (`infrastructure/alloy/config.alloy`) is the one collector. The services only see its OTLP/HTTP port, which requires Basic Auth: a bcrypt htpasswd file (gitignored) from `scripts/observability/telemetry-credentials.sh`, which also writes the matching `OTEL_EXPORTER_OTLP_HEADERS` into each service's `.env`. Without the file, Alloy doesn't start; a request without the right credentials gets 401. Alloy copies the service and environment onto every metric (`service_name`, `deployment_environment_name`), sends traces to Tempo, logs to Loki's OTLP endpoint (trace id, span id and flow id become structured metadata: `trace_id`, `span_id`, `session_id`) and metrics to Prometheus (remote write). It also scrapes, with nothing to install on them:
+
+- **RabbitMQ:** its built-in Prometheus plugin, per queue (`/metrics/detailed`: `rabbitmq_detailed_queue_messages`, `_ready`, `_unacked`, `_consumers`, `_messages_acked_total`...) and the node (`/metrics`);
+- **Redis:** its own `INFO`, through Alloy's embedded exporter (`redis_up`, `redis_memory_used_bytes`, `redis_keyspace_hits_total`, `redis_evicted_keys_total`...);
+- **their containers' logs**, through the Docker API, as `service_name` `rabbitmq` and `redis`.
+
+Only Alloy's OTLP port (and its UI) and Grafana are published, on 127.0.0.1; Loki, Tempo and Prometheus are only reachable inside the Compose network. Basic Auth over plain HTTP is for the local machine; anywhere else, Alloy's receiver also needs TLS.
+
+### 15.4 Grafana: dashboards and alert rules
+
+Grafana (`http://localhost:3000`, `admin` and `GRAFANA_ADMIN_PASSWORD` from `.env`) gets everything from `infrastructure/grafana/`, provisioned: change it there, not in Grafana.
+
+- **Data sources**, linked both ways: a log's `trace_id` opens its trace in Tempo, a span opens its logs in Loki, Tempo's service map reads Prometheus.
+- **Fitness platform** dashboard (`env`, `service`, `interface` and `flow` variables): the alert rules' state; HTTP requests per minute by service and endpoint, 5xx errors, p95 duration and the busiest endpoints; GraphQL operations per minute by type and root fields, failures by error code and p95 duration; rate-limited requests by handler, timeouts by entrypoint, rejected and failed responses, and requests waiting for a database connection, with the faults of section 16 as annotations; Tempo's service graph and recent traces; a flow's traces and logs; database duration and connections, event loop delay and utilization, heap; RabbitMQ dead letters, messages, ready and unacknowledged, acknowledgements per minute and consumers per queue, node memory; Redis up, memory and maxmemory, hit ratio, commands per second, clients, evictions and expirations; the error and warning logs of the services, RabbitMQ and Redis.
+- **Alert rules** (`provisioning/alerting/alert-rules.yaml`), evaluated every minute on Prometheus:
+
+| Rule | PromQL, in short | Fires when |
+|---|---|---|
+| NestJS endpoint over 20 requests per minute | `increase(http_server_request_duration_seconds_count[1m])` by service, method, route | More than 20 in the last minute |
+| GraphQL operation over 20 per minute | `increase(graphql_server_operation_duration_seconds_count[1m])` by operation type and root fields | More than 20 in the last minute |
+| RabbitMQ messages not consumed for 5 minutes | Messages throughout 5 minutes (`min_over_time`), and in them no acknowledgement (`increase(..._messages_acked_total) == 0`) or no consumer, or no ack counter at all | A stuck or missing consumer, or dead letters waiting: an incident |
+| RabbitMQ queue over 5 messages | `max_over_time(rabbitmq_detailed_queue_messages[1m])` by queue | More than 5 (ready and unacknowledged) |
+| Redis unreachable | `redis_up` | Down for a minute, or no data (Alloy isn't scraping) |
+| Redis memory over 90% of maxmemory | `redis_memory_used_bytes / redis_memory_max_bytes`, only with a maxmemory | Over 90% for 5 minutes |
+| Redis evicting keys | `increase(redis_evicted_keys_total[5m])` | Any eviction in 5 minutes |
+| Requests rejected by the rate limit | `increase(rate_limit_rejected_requests_total[5m])` by service and handler | Any rejection in 5 minutes (section 16.1) |
+| Queries timing out | `increase(resilience_events_total{resilience_event="timeout"}[5m])` by service and entrypoint | Any timeout in 5 minutes (section 16.2) |
+| HTTP server errors over 5% of requests | 5xx over all of `http_server_request_duration_seconds_count`, in 5 minutes, by service | Over 5% for a minute |
+| GraphQL operations failing on the server over 5% | `INTERNAL_SERVER_ERROR` or `TIMEOUT` over all of `graphql_server_operation_duration_seconds_count`, in 5 minutes | Over 5% for a minute (client errors don't count) |
+| Requests waiting for a database connection | `max_over_time(db_client_connection_pending_requests[1m])` by service | Any, for a minute |
+
+The rules notify Grafana's default contact point; add one (Slack, e-mail with SMTP, a webhook) in Grafana's Alerting, or provisioned next to the rules.
+
+## 16. Rate limit, timeouts and faults
+
+Both services limit how many requests one caller sends, and how long a query may take. Locally, Toxiproxy slows down or cuts any connection of a service to its PostgreSQL, Redis or RabbitMQ, so both, and every other failure, can be triggered on purpose and watched in Grafana (section 15).
+
+### 16.1 Rate limit
+
+- `@nestjs/throttler` ([`security/rate-limiting.md`](nestjs/security/rate-limiting.md)), with `RateLimitGuard` (each service's `platform/http/`) as the global guard: at most `RATE_LIMIT_PER_MINUTE` requests (default 600) per minute from one caller, its IP address (`req.ip`). Past it, the caller is rejected until the minute ends.
+- **HTTP:** 429 with `Retry-After` (seconds); the accepted responses carry `X-RateLimit-Limit`, `-Remaining` and `-Reset`.
+- **GraphQL:** checked on the root fields only (Nest doesn't run guards on field resolvers), so a request with two root fields counts twice. The rejected field fails with `TOO_MANY_REQUESTS`, `httpStatus: 429` and `retryAfter` (seconds) in its extensions, like `@nestjs/resilience`'s rejections (`RateLimitFilter`: Apollo would report the guard's exception as `INTERNAL_SERVER_ERROR`), and the response is **429**, with `Retry-After`, so that clients, proxies and gateways see the rejection without reading the body. The filter sets `extensions.http.status`, which Apollo applies to the response and leaves out of it; `preserveHttpStatusForExecutionErrors: false` in `GraphQLModule` keeps `@nestjs/apollo` from setting it back to 200 because execution ran. No other error sets `extensions.http`: a field's `TIMEOUT` and the domain errors still answer 200, as the GraphQL-over-HTTP spec recommends for field errors. If a request has another root field that was answered, the response is 429 with that field's data.
+- **In the trace:** the span the guard runs in, Nest's span of the handler (REST) or the root field's `graphql.resolve` (GraphQL), gets a `rate_limit.rejected` event (`nestjs.handler`, `rate_limit.limit`, `rate_limit.window_seconds`, `rate_limit.retry_after_seconds`) and the error status, so the trace shows why the request stopped. The HTTP server span keeps `http.response.status_code: 429` without an error status: OpenTelemetry leaves a server's 4xx unset. In Tempo: `{ event:name = "rate_limit.rejected" }`.
+- Not limited: the health checks (Kubernetes' probes), Telegram's webhook (every member's updates come from Telegram's few addresses) and RabbitMQ's messages.
+- **Per instance:** the counts are in each instance's memory, so with N instances a caller gets up to N times the limit. Behind a load balancer, `req.ip` is the balancer's until Express trusts it (`trust proxy`, in the rate limiting docs): to set when the services are deployed.
+- Metric: `rate_limit.rejected_requests` (`rate_limit_rejected_requests_total`), by `nestjs.handler` (`MemberResolver.member`, `EquipmentController.get`...).
+
+### 16.2 Timeouts
+
+- `@nestjs/resilience` ([`reliability/resilience.md`](nestjs/reliability/resilience.md)): `@Timeout()` on the reads, with `QUERY_TIMEOUT_MS` (default 3000) as `defaults.timeout`. Workout Tracking: its GET routes, answered **504** (`"code": "TIMEOUT"`). Training Progress: the query field resolvers (`Member`'s fields, `TrainingGoal.progress`), whose field fails with **`TIMEOUT`** and `httpStatus: 504`; a non-null field takes its parent down with it, up to `data: null`.
+- GraphQL: `fieldResolverEnhancers: ['interceptors']` runs the package's interceptor on field resolvers, where the queries are, and `@Timeout()` goes on each field resolver method: on the class, it only reaches queries and mutations (here `member`, which reads nothing).
+- **No timeout on writes** (POST, PUT, DELETE, mutations): a write that timed out could still commit, and its caller would send it again. They're bounded by the pool (`connectionTimeoutMillis`, 5 s) and, in Training Progress, by PostgreSQL's `statement_timeout` (15 s), which a network that stops answering doesn't trigger.
+- **The work isn't stopped.** pg can't cancel a query from an `AbortSignal`, so a query that timed out keeps its connection until it ends. With a slow database the pool fills up, requests wait for a connection (`db_client_connection_pending_requests`), and after `connectionTimeoutMillis` they fail.
+- Metric: `resilience.events` (`resilience_events_total`), by `resilience.event` (`timeout`; later `retry`, `circuit-open`...), `resilience.name` and `resilience.source` (the entrypoint). `@app/telemetry` counts them from the package's diagnostics channels (`countResilienceEvents()`, started by `TelemetryModule`).
+
+### 16.3 Faults: Toxiproxy
+
+Compose's `faults` profile runs [Toxiproxy](https://github.com/Shopify/toxiproxy) 2.13, with one proxy per connection (`infrastructure/toxiproxy/proxies.json`), so a fault hits one service's dependency, not the other's:
+
+| Proxy | Port | To |
+|---|---|---|
+| `workout-tracking-db` | 25433 | `workout-tracking-db:5432` |
+| `workout-tracking-rabbitmq` | 25672 | `rabbitmq:5672` |
+| `training-progress-db` | 25434 | `training-progress-db:5432` |
+| `training-progress-redis` | 26379 | `redis:6379` |
+| `training-progress-rabbitmq` | 25673 | `rabbitmq:5672` |
+
+- `docker compose --profile faults up -d --wait` starts it; its API and the proxies listen on 127.0.0.1 only.
+- `scripts/faults/start-through-toxiproxy.sh <service>` starts the service like `pnpm start:dev:<service>`, with the URLs of its `.env` on the proxies' ports (the shell's variables win over `.env`). Stop the usual `start:dev` first: two watchers would build into the same `dist/`.
+- `scripts/faults/fault.sh` injects and clears the faults: `latency <proxy> <ms> [jitter]` (every answer arrives later), `hang <proxy>` (no answer, the connection stays open), `down` and `up <proxy>` (connections closed and refused), `clear [<proxy>]`, `list`. Each change is also a Grafana annotation, tagged `fault`, which the dashboard shows on every panel.
+- Local only: the services don't know about Toxiproxy, and no other environment runs it. Alloy scrapes RabbitMQ and Redis directly, not through the proxies, so `redis_up` stays 1 while `training-progress-redis` is down.
+- A new PostgreSQL connection takes several roundtrips: through 1.5 s of latency, about 8 s. A pooled connection pays the latency once per query.
+
+### 16.4 Scenarios, and what Grafana shows
+
+Start the service with `scripts/faults/start-through-toxiproxy.sh`, then cause the fault and watch the **Fitness platform** dashboard (row *Rate limit, timeouts and faults*) and the alert list. Alerts are evaluated every minute. `fault.sh clear` ends every scenario.
+
+| Scenario | How | What happens | Where it shows |
+|---|---|---|---|
+| A caller over the rate limit | `RATE_LIMIT_PER_MINUTE=20` in the service's `.env` (or 600 and more requests), then `pnpm dlx autocannon -d 30 -c 5 -m POST -H 'Content-Type: application/json' -b '{"query":"{ member(id: \"ada@example.com\") { streak } }"}' http://localhost:3002/graphql` | Past 20 a minute, 429 (with `TOO_MANY_REQUESTS` over GraphQL) until the minute ends | *Rate-limited requests*, *Rejected and failed responses*, GraphQL's *Failed operations by error code*; in Tempo, `{ event:name = "rate_limit.rejected" }`; alert *Requests rejected by the rate limit* |
+| A slow database | `fault.sh latency training-progress-db 4000`, then query `trainingGoals` | `TIMEOUT` after `QUERY_TIMEOUT_MS`; the queries go on in the background | *Timeouts*, *Requests waiting for a database connection*, database p95; long `pg` spans in Tempo; alert *Queries timing out* |
+| A database that stops answering | `fault.sh hang training-progress-db`, then a few queries and a mutation | Queries fail with `TIMEOUT`, and their connections stay taken. New connections can't finish their handshake, so whatever needs one waits 5 s (`connectionTimeoutMillis`) and fails: a mutation with `INTERNAL_SERVER_ERROR`. Readiness `down` (503) | *Timeouts*, *Requests waiting for a database connection*; alerts *Queries timing out*, *GraphQL operations failing on the server* |
+| A database that is down | `fault.sh down workout-tracking-db`, then `GET /internal/v1/workouts/<id>` | Connections refused: 500 right away; readiness `down` (503) | *Rejected and failed responses*, *Errors and warnings* logs; alert *HTTP server errors over 5% of requests* |
+| A slow or dead cache | `fault.sh hang training-progress-redis`, then query `streak` | `ReadCache` gives up after 250 ms and reads PostgreSQL: answers stay right, about 250 ms slower; a warning per read | Duration p95, *Errors and warnings* logs. The Redis alerts don't fire: Alloy reads Redis directly |
+| The producer cut from RabbitMQ | `fault.sh down workout-tracking-rabbitmq`, then record a workout | Still 201: the event waits in the outbox, and the relay retries (20 attempts over 30 to 60 minutes); delivered after `fault.sh up` | Nothing in RabbitMQ's panels; `GET /internal/v1/admin/outbox/stats` (no outbox metric yet, section 16.5) |
+| The consumer cut from RabbitMQ | `fault.sh down training-progress-rabbitmq`, then record workouts | Messages wait in the queue; readiness `degraded` | *Messages per queue*; alerts *RabbitMQ queue with 5 or more messages*, then *messages not consumed for 5 minutes* |
+
+### 16.5 Proposed next steps (not built)
+
+- **A circuit breaker for PostgreSQL** (a `database` preset of `@nestjs/resilience`): once most queries fail or time out, answer 503 at once instead of piling more queries on a pool that is already full. `resilience_events_total{resilience_event="circuit-open"}` already counts its transitions: alert on them.
+- **Stop the timed-out queries:** pg's client-side `query_timeout` at `QUERY_TIMEOUT_MS`, so a timed-out query gives its connection back; a `statement_timeout` for Workout Tracking too.
+- **An outbox metric** (messages waiting, age of the oldest) and its alert: today a producer cut from RabbitMQ only shows in the outbox stats route.
+- **A cache fallback counter** in `ReadCache` and its alert: the cache as the service sees it, not only as Alloy does.
+- **An alert for a service that stops reporting:** its runtime metrics, sent every 10 s, are missing.
+- **A shared rate limit**, in Redis (the community storage of the rate limiting docs) or at the ingress, once there are several instances.

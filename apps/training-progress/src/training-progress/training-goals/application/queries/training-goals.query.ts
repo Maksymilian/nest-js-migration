@@ -7,6 +7,7 @@ export class TrainingGoalsQuery extends Query<TrainingGoalRepresentation[]> {
   constructor(
     readonly memberId: MemberId,
     readonly status: GoalStatus | null,
+    readonly setSince: Date | null = null,
   ) {
     super();
   }

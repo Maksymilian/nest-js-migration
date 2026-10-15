@@ -1,0 +1,132 @@
+// Grafana Alloy (docs/architecture.md, section 15): the one collector. It receives the services'
+// OpenTelemetry, scrapes RabbitMQ and Redis, and collects their containers' logs, then sends traces
+// to Tempo, logs to Loki and metrics to Prometheus. Only its OTLP port is published.
+
+// --- The services: OTLP/HTTP on 4318, only with Basic Auth. The credentials are a bcrypt htpasswd
+// file, which scripts/observability/telemetry-credentials.sh creates; without it, Alloy doesn't start.
+
+otelcol.auth.basic "services" {
+  htpasswd {
+    file = "/etc/alloy/htpasswd"
+  }
+}
+
+otelcol.receiver.otlp "services" {
+  http {
+    endpoint = "0.0.0.0:4318"
+    auth     = otelcol.auth.basic.services.handler
+  }
+  output {
+    metrics = [otelcol.processor.transform.service_labels.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Prometheus keeps resource attributes in target_info; the service and environment become labels of
+// every metric instead, so dashboards and alerts filter on them directly.
+otelcol.processor.transform "service_labels" {
+  error_mode = "ignore"
+  metric_statements {
+    context    = "datapoint"
+    statements = [
+      `set(attributes["service.name"], resource.attributes["service.name"])`,
+      `set(attributes["deployment.environment.name"], resource.attributes["deployment.environment.name"])`,
+    ]
+  }
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.prometheus.services.input]
+    logs    = [otelcol.exporter.otlphttp.loki.input]
+    traces  = [otelcol.exporter.otlphttp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlphttp "tempo" {
+  client {
+    endpoint = "http://tempo:4318"
+  }
+}
+
+// Loki's own OTLP endpoint: service.name becomes the service_name label, the trace and span ids and
+// the flow id (session_id) structured metadata.
+otelcol.exporter.otlphttp "loki" {
+  client {
+    endpoint = "http://loki:3100/otlp"
+  }
+}
+
+otelcol.exporter.prometheus "services" {
+  forward_to = [prometheus.remote_write.prometheus.receiver]
+}
+
+// --- RabbitMQ: its built-in Prometheus plugin. Per queue (messages, ready, unacknowledged, consumers,
+// deliveries and acknowledgements), and the node's aggregated metrics.
+
+prometheus.scrape "rabbitmq_queues" {
+  job_name     = "rabbitmq"
+  targets      = [{"__address__" = "rabbitmq:15692"}]
+  metrics_path = "/metrics/detailed"
+  params       = {"family" = ["queue_coarse_metrics", "queue_consumer_count", "queue_delivery_metrics"]}
+  forward_to   = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.scrape "rabbitmq_node" {
+  job_name   = "rabbitmq"
+  targets    = [{"__address__" = "rabbitmq:15692"}]
+  forward_to = [prometheus.remote_write.prometheus.receiver]
+}
+
+// --- Redis: read straight from the server (INFO), by Alloy's embedded exporter.
+
+prometheus.exporter.redis "redis" {
+  redis_addr = "redis:6379"
+}
+
+prometheus.scrape "redis" {
+  job_name   = "redis"
+  targets    = prometheus.exporter.redis.redis.targets
+  forward_to = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.remote_write "prometheus" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// --- RabbitMQ's and Redis' container logs, labelled with their Compose service.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "infrastructure_logs" {
+  targets = discovery.docker.containers.targets
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "rabbitmq|redis"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service_name"
+  }
+}
+
+loki.source.docker "infrastructure_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.infrastructure_logs.output
+  forward_to = [loki.write.loki.receiver]
+}
+
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

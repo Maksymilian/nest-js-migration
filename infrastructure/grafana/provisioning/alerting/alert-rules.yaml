@@ -1,0 +1,678 @@
+# Grafana alert rules (docs/architecture.md, section 15.4), provisioned: change them here, not in Grafana.
+# Evaluated every minute on Prometheus.
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "fitness-platform",
+      "folder": "Fitness platform",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "http-endpoint-request-rate",
+          "title": "NestJS endpoint over 20 requests per minute",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $labels.http_request_method }} {{ $labels.http_route }} over 20 requests per minute",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} requests in the last minute ({{ $labels.deployment_environment_name }}). The traces are in Tempo, by service and route; each carries its flow id (session.id)."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name, http_request_method, http_route) (increase(http_server_request_duration_seconds_count[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        20
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "graphql-operation-request-rate",
+          "title": "GraphQL operation over 20 per minute",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "GraphQL {{ $labels.graphql_operation_type }} on {{ $labels.graphql_root_fields }} over 20 per minute",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} operations in the last minute ({{ $labels.deployment_environment_name }}). Every GraphQL request is POST /graphql to the HTTP metric; graphql_server_operation_duration_seconds tells the operations apart."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, graphql_operation_type, graphql_root_fields) (increase(graphql_server_operation_duration_seconds_count[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        20
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "rabbitmq-messages-not-consumed",
+          "title": "RabbitMQ messages not consumed for 5 minutes",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Queue {{ $labels.queue }}: messages not consumed for 5 minutes",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} messages have waited for 5 minutes, and RabbitMQ (its own ack and consumer counts) saw no acknowledgement or no consumer in that time: the consuming service is down, disconnected or stuck. For a dead-letter queue (.dlq), messages failed for good. Either way, an incident."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "(min_over_time(rabbitmq_detailed_queue_messages[5m]) > 0)\n  and on (vhost, queue)\n  ((increase(rabbitmq_detailed_queue_messages_acked_total[5m]) == 0) or (max_over_time(rabbitmq_detailed_queue_consumers[5m]) == 0))\nor\n((min_over_time(rabbitmq_detailed_queue_messages[5m]) > 0) unless on (vhost, queue) rabbitmq_detailed_queue_messages_acked_total)",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "rabbitmq-queue-not-empty",
+          "title": "RabbitMQ queue not empty for 5 minutes",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Queue {{ $labels.queue }} not empty for 5 minutes",
+            "description": "It has held at least {{ $values.A.Value | printf \"%.0f\" }} messages (ready and unacknowledged) at every moment of the last 5 minutes, whether or not they are being consumed. For a dead-letter queue (.dlq), dead letters are waiting."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "min by (vhost, queue) (min_over_time(rabbitmq_detailed_queue_messages[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "rabbitmq-queue-backlog",
+          "title": "RabbitMQ queue with 5 or more messages",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Queue {{ $labels.queue }} holds 5 or more messages",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} messages (ready and unacknowledged) in the last minute."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (vhost, queue) (max_over_time(rabbitmq_detailed_queue_messages[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gte",
+                      "params": [
+                        5
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "redis-unreachable",
+          "title": "Redis unreachable",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Redis {{ $labels.instance }} unreachable",
+            "description": "Alloy can't read Redis (or, without data, Alloy itself isn't scraping). Training Progress keeps serving queries without its cache, slower."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (instance) (redis_up)",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "redis-memory-near-limit",
+          "title": "Redis memory over 90% of maxmemory",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Redis {{ $labels.instance }} over 90% of maxmemory",
+            "description": "It uses {{ $values.A.Value | humanizePercentage }} of maxmemory: it starts evicting cached read models soon. Without maxmemory (Redis' default, 0: no limit) there is no ratio, and this rule stays silent."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (instance) (redis_memory_used_bytes / redis_memory_max_bytes and redis_memory_max_bytes > 0)",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.9
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "redis-evictions",
+          "title": "Redis evicting keys",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "Redis {{ $labels.instance }} is evicting keys",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} keys evicted in the last 5 minutes because of maxmemory: cached read models disappear early, and queries go to PostgreSQL."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (instance) (increase(redis_evicted_keys_total[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "rate-limit-rejections",
+          "title": "Requests rejected by the rate limit",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $labels.nestjs_handler }} rejected requests past the rate limit",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} requests in the last 5 minutes ({{ $labels.deployment_environment_name }}) came from a caller over RATE_LIMIT_PER_MINUTE. One client in a loop, a retry storm, or a limit too low for real traffic. The limit counts per instance."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name, nestjs_handler) (increase(rate_limit_rejected_requests_total[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "query-timeouts",
+          "title": "Queries timing out",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $labels.resilience_source }} timing out",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} timeouts in the last 5 minutes ({{ $labels.deployment_environment_name }}): the query took longer than QUERY_TIMEOUT_MS, and the caller got 504 or TIMEOUT. Its work goes on in the background, holding a database connection: look at the database row and the pending connections."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name, resilience_source) (increase(resilience_events_total{resilience_event=\"timeout\"}[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "http-server-errors",
+          "title": "HTTP server errors over 5% of requests",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $values.A.Value | humanizePercentage }} of HTTP requests failing",
+            "description": "Over 5% of the requests in the last 5 minutes answered 5xx ({{ $labels.deployment_environment_name }}): 504 is a timeout, 500 usually a dependency that is down (PostgreSQL, RabbitMQ). GraphQL answers 200 even when its fields fail: see the GraphQL rule."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name) (increase(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[5m]))\n  / sum by (deployment_environment_name, service_name) (increase(http_server_request_duration_seconds_count[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.05
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "graphql-server-errors",
+          "title": "GraphQL operations failing on the server over 5%",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "GraphQL: {{ $values.A.Value | humanizePercentage }} of operations failing on the server",
+            "description": "Over 5% of the GraphQL operations in the last 5 minutes ({{ $labels.deployment_environment_name }}) failed with INTERNAL_SERVER_ERROR or TIMEOUT: a dependency down or slow. Client errors (BAD_REQUEST, NOT_FOUND, TOO_MANY_REQUESTS...) don't count."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name) (increase(graphql_server_operation_duration_seconds_count{error_type=~\"INTERNAL_SERVER_ERROR|TIMEOUT\"}[5m]))\n  / sum by (deployment_environment_name) (increase(graphql_server_operation_duration_seconds_count[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.05
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "database-connections-waiting",
+          "title": "Requests waiting for a database connection",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: requests waiting for a database connection",
+            "description": "For over a minute, up to {{ $values.A.Value | printf \"%.0f\" }} requests ({{ $labels.deployment_environment_name }}) waited for one of the pool's 25 connections: PostgreSQL is slow, or queries that timed out still hold their connections. After connectionTimeoutMillis (5 s), the waiting requests fail."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (deployment_environment_name, service_name) (max_over_time(db_client_connection_pending_requests[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

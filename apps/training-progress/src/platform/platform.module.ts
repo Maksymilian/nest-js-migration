@@ -1,13 +1,16 @@
+import { TelemetryModule } from '@app/telemetry';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
 import { CacheModule } from '@nestjs/cache-manager';
 import { Global, Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_FILTER, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { CqrsModule } from '@nestjs/cqrs';
 import { DrizzleModule, getDrizzleToken } from '@nestjs/drizzle';
 import { GraphQLModule } from '@nestjs/graphql';
 import { OutboxModule, OutboxStorage } from '@nestjs/outbox';
 import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
+import { ResilienceModule } from '@nestjs/resilience';
+import { minutes, ThrottlerModule } from '@nestjs/throttler';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { CacheInvalidationHandler } from './cache/cache-invalidation.handler.js';
 import { ReadCache } from './cache/read-cache.js';
@@ -16,7 +19,10 @@ import { type Environment, validateEnvironment } from './config/environment.js';
 import type { Database } from './database/database.js';
 import { Transactions } from './database/transactions.js';
 import { DomainErrorFilter } from './errors/domain-error.filter.js';
+import { RateLimitFilter } from './errors/rate-limit.filter.js';
+import { GraphqlOperationMetricsPlugin } from './graphql/graphql-operation-metrics.plugin.js';
 import { HealthModule } from './health/health.module.js';
+import { RateLimitGuard } from './http/rate-limit.guard.js';
 import { DeadLetterTopology } from './messaging/dead-letter-topology.js';
 import { DomainEventPublisher } from './outbox/domain-event-publisher.js';
 import { OutboxDomainEventPublisher } from './outbox/outbox-domain-event-publisher.js';
@@ -28,12 +34,13 @@ import { TelegramModule } from './telegram/telegram.module.js';
 /**
  * Technical plumbing of the service: configuration, the database, the outbox (domain events to
  * the policies, the published language to Notifications, all in-process), Redis, GraphQL,
- * scheduling, RabbitMQ topology, validation, error mapping, health checks, the Telegram bot. No
- * domain concepts.
+ * scheduling, RabbitMQ topology, the rate limit and timeouts, validation, error mapping, health
+ * checks, the Telegram bot. No domain concepts.
  */
 @Global()
 @Module({
   imports: [
+    TelemetryModule,
     ConfigModule.forRoot({
       isGlobal: true,
       cache: true,
@@ -75,6 +82,29 @@ import { TelegramModule } from './telegram/telegram.module.js';
       autoSchemaFile: true,
       sortSchema: true,
       path: '/graphql',
+      // Interceptors run on field resolvers too, where the queries are: @Timeout() covers each field.
+      fieldResolverEnhancers: ['interceptors'],
+      // An error's extensions.http.status becomes the response's: only the rate limit sets it (429,
+      // RateLimitFilter). The driver would answer 200 whenever execution ran; field errors (TIMEOUT,
+      // domain errors) set no extensions.http, so they still answer 200.
+      preserveHttpStatusForExecutionErrors: false,
+    }),
+    // The rate limit per caller (section 16), counted in this instance's memory: it applies per instance.
+    // RATE_LIMIT=off where the edge limits callers instead (AWS WAF): every request passes, uncounted.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Environment, true>) => {
+        const off = config.get('RATE_LIMIT', { infer: true }) === 'off';
+        return {
+          throttlers: [{ ttl: minutes(1), limit: config.get('RATE_LIMIT_PER_MINUTE', { infer: true }) }],
+          skipIf: () => off,
+        };
+      },
+    }),
+    // Timeouts (section 16): a query field with @Timeout() fails with TIMEOUT after QUERY_TIMEOUT_MS.
+    ResilienceModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Environment, true>) => ({ defaults: { timeout: config.get('QUERY_TIMEOUT_MS', { infer: true }) } }),
     }),
     HealthModule,
     OutboxAdminModule,
@@ -95,11 +125,15 @@ import { TelegramModule } from './telegram/telegram.module.js';
     ReadCache,
     CacheInvalidationHandler,
     DeadLetterTopology,
+    // Picked up by Apollo (@Plugin()): GraphQL's per-operation metric.
+    GraphqlOperationMetricsPlugin,
     {
       provide: APP_PIPE,
       useValue: new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     },
     { provide: APP_FILTER, useClass: DomainErrorFilter },
+    { provide: APP_FILTER, useClass: RateLimitFilter },
+    { provide: APP_GUARD, useClass: RateLimitGuard },
   ],
   exports: [Transactions, DomainEventPublisher, ReadCache, TelegramModule],
 })

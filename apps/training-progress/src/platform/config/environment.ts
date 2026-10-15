@@ -30,6 +30,27 @@ export class Environment {
   @IsIn(['on', 'off'])
   OUTBOX_RELAY: 'on' | 'off' = 'on';
 
+  /**
+   * `off` where the platform's edge applies the rate limit instead (in AWS, a WAF rate-based rule:
+   * section 16.1); `on` locally, and wherever nothing in front of the service limits callers.
+   */
+  @IsIn(['on', 'off'])
+  RATE_LIMIT: 'on' | 'off' = 'on';
+
+  /** Requests one caller (an IP address) may send per minute; past it, 429 or TOO_MANY_REQUESTS (section 16). Counted per instance. */
+  @IsInt()
+  @Min(1)
+  RATE_LIMIT_PER_MINUTE: number = 600;
+
+  /** How long a GraphQL query field may take before it fails with TIMEOUT (section 16). Its work isn't stopped. */
+  @IsInt()
+  @Min(1)
+  QUERY_TIMEOUT_MS: number = 3000;
+
+  /** `off` where logs only go to OpenTelemetry (production): nothing on stdout or stderr. */
+  @IsIn(['on', 'off'])
+  LOG_CONSOLE: 'on' | 'off' = 'on';
+
   /** Protects the dead-letter admin routes. Without it, they answer 403. */
   @IsOptional()
   @IsString()

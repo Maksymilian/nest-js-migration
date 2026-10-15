@@ -15,6 +15,8 @@ process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
 process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off'; // no poll loop: the tests drive the relay
 process.env.ADMIN_TOKEN = 'a-long-admin-token-for-tests';
+process.env.RATE_LIMIT_PER_MINUTE = '10000'; // whatever .env says: resilience.e2e-spec.ts covers it
+process.env.QUERY_TIMEOUT_MS = '10000';
 
 const { AppModule } = await import('../src/app.module.js');
 const { WORKOUT_TRACKING_BROKER } = await import('../src/platform/platform.module.js');

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "0199c3a2-0000-7000-8000-00000000c001",
     "name": "Workout Tracking (REST, internal)",
-    "description": "Workout Tracking's internal REST API under /internal/v1: equipment, pairing, recordings, corrections and voids.\n\nRun `docker compose up -d --wait` first: Liquibase seeds Ada's bike (BK-0001, paired with ada@example.com), Grace's treadmill (TM-0001) and an unpaired rower (RW-0001). Run the folders in order; each request checks its status code. Recorded workouts reach Training Progress through RabbitMQ: follow up with the Training Progress (GraphQL) collection.",
+    "description": "Workout Tracking's internal REST API under /internal/v1: equipment, pairing, recordings, corrections and voids.\n\nRun `docker compose up -d --wait` first: Liquibase seeds Ada's bike (BK-0001, paired with ada@example.com), Grace's treadmill (TM-0001) and an unpaired rower (RW-0001). Run the folders in order; each request checks its status code. Recorded workouts reach Training Progress through RabbitMQ: follow up with the Training Progress (GraphQL) collection.\n\nPast RATE_LIMIT_PER_MINUTE requests a minute from one caller, the API answers 429 with Retry-After; a GET route that takes longer than QUERY_TIMEOUT_MS answers 504 with code TIMEOUT. See section 16 of docs/architecture.md.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [

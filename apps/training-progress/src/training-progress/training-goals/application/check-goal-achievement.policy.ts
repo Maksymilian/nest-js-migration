@@ -1,5 +1,5 @@
+import { OnTracedOutboxMessage } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
-import { OnOutboxMessage } from '@nestjs/outbox';
 import { Transactions } from '../../../platform/database/transactions.js';
 import { DomainEventPublisher } from '../../../platform/outbox/domain-event-publisher.js';
 import { DomainTopics, type LoggedWorkoutPayloadV1, type TrainingGoalSetPayloadV1 } from '../../../platform/outbox/domain-topics.js';
@@ -25,7 +25,7 @@ export class CheckGoalAchievementPolicy {
     private readonly events: DomainEventPublisher,
   ) {}
 
-  @OnOutboxMessage([DomainTopics.workoutLoggedV1, DomainTopics.loggedWorkoutRevisedV1], { consumer: 'goal-achievement' })
+  @OnTracedOutboxMessage([DomainTopics.workoutLoggedV1, DomainTopics.loggedWorkoutRevisedV1], { consumer: 'goal-achievement' })
   async loggedWorkoutCounted(payload: LoggedWorkoutPayloadV1) {
     const discipline = Discipline.from(payload.discipline);
     const startedAt = new Date(payload.startedAt);
@@ -36,7 +36,7 @@ export class CheckGoalAchievementPolicy {
   }
 
   /** Workouts already logged in the new goal's period count towards it. */
-  @OnOutboxMessage(DomainTopics.trainingGoalSetV1, { consumer: 'goal-achievement' })
+  @OnTracedOutboxMessage(DomainTopics.trainingGoalSetV1, { consumer: 'goal-achievement' })
   async trainingGoalSet({ trainingGoalId }: TrainingGoalSetPayloadV1) {
     await this.recordProgress(await this.goals.get(TrainingGoalId.from(trainingGoalId)));
   }

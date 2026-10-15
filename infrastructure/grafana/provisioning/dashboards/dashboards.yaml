@@ -1,0 +1,9 @@
+# The dashboards in infrastructure/grafana/dashboards/, provisioned: change them there.
+apiVersion: 1
+providers:
+  - name: fitness-platform
+    folder: Fitness platform
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,4 +1,5 @@
 import { DomainError } from '@app/ddd';
+import { inInterface, inRoundtrip } from '@app/telemetry';
 import { type BeforeApplicationShutdown, Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Bot, BotError, type CommandContext, Composer, type Context, type Filter, GrammyError, HttpError } from 'grammy';
@@ -117,6 +118,15 @@ export class TelegramBot implements OnApplicationBootstrap, BeforeApplicationShu
       this.logger.log('Telegram bot off: no TELEGRAM_BOT_TOKEN');
       return;
     }
+    // Every update is a roundtrip of its own in the traces, with its flow and the `telegram`
+    // interface: long polling has no HTTP request to start one. Its type and id only: the chat
+    // identifies a person.
+    this.bot.use((ctx, next) => {
+      const type = ALLOWED_UPDATES.find((kind) => kind in ctx.update) ?? 'update';
+      return inRoundtrip(`telegram ${type}`, { 'telegram.update.id': ctx.update.update_id, 'telegram.update.type': type }, () =>
+        inInterface('telegram', next),
+      );
+    });
     const privateChats = this.bot.chatType('private');
     privateChats.use(this.handlers);
     // A button this version no longer has: stop its spinner.

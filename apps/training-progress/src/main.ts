@@ -1,3 +1,4 @@
+import { TelemetryLogger } from '@app/telemetry';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { type MicroserviceOptions, Transport } from '@nestjs/microservices';
@@ -16,8 +17,11 @@ import { WorkoutTrackingSubscription } from './training-progress/workout-trackin
  */
 async function bootstrap() {
   // rawBody: Telegram's webhook is verified on the bytes it sent, not on a re-serialized body.
-  const app = configureHttp(await NestFactory.create(AppModule, { rawBody: true }));
+  // Startup logs wait for the logger, which the validated configuration sets up.
+  const app = configureHttp(await NestFactory.create(AppModule, { rawBody: true, bufferLogs: true }));
   const config = app.get(ConfigService<Environment, true>);
+  // Logs go to OpenTelemetry, with the trace and flow they belong to, and to the console unless LOG_CONSOLE=off.
+  app.useLogger(new TelemetryLogger({ console: config.get('LOG_CONSOLE', { infer: true }) === 'on' }));
   const { exchange, routingKey, queue, queueArguments } = WorkoutTrackingSubscription;
   app.connectMicroservice<MicroserviceOptions>(
     {
