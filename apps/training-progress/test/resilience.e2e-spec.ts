@@ -16,6 +16,7 @@ process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off';
 process.env.MAIL_TRANSPORT = 'file';
 process.env.TELEGRAM_BOT_TOKEN = '';
+process.env.RATE_LIMIT = 'on';
 process.env.RATE_LIMIT_PER_MINUTE = '3';
 process.env.QUERY_TIMEOUT_MS = '200';
 

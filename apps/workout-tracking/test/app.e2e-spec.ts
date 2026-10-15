@@ -9,6 +9,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { of } from 'rxjs';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
+import { v7 as uuidv7 } from 'uuid';
 import { migratedDatabase } from './support/migrated-database.js';
 
 process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
@@ -307,6 +308,21 @@ describe('Workout Tracking (e2e)', () => {
     it('keeps the outbox schema at the version Liquibase applied', async () => {
       const { rows } = await client.query(`select max(version)::int as version from nest_outbox.migrations`);
       expect(rows).toEqual([{ version: 1 }]);
+    });
+  });
+
+  describe('HTTP', () => {
+    it('sends the security headers on every response, errors included, and no CORS headers', async () => {
+      const { headers } = await api().get(`/internal/v1/equipment/${uuidv7()}`).set('Origin', 'https://elsewhere.example').expect(404);
+
+      expect(headers).toMatchObject({
+        'content-security-policy': expect.stringContaining("default-src 'self'"),
+        'strict-transport-security': 'max-age=31536000; includeSubDomains',
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'SAMEORIGIN',
+      });
+      expect(headers['x-powered-by']).toBeUndefined();
+      expect(headers['access-control-allow-origin']).toBeUndefined();
     });
   });
 });

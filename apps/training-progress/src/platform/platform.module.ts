@@ -90,7 +90,7 @@ import { TelegramModule } from './telegram/telegram.module.js';
       preserveHttpStatusForExecutionErrors: false,
     }),
     // The rate limit per caller (section 16), counted in this instance's memory: it applies per instance.
-    // RATE_LIMIT=off where the edge limits callers instead (AWS WAF): every request passes, uncounted.
+    // Only with RATE_LIMIT=on; off (the default), every request passes, uncounted: in AWS, WAF limits callers.
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<Environment, true>) => {

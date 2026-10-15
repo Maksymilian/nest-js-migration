@@ -22,6 +22,7 @@ process.env.MAIL_TRANSPORT = 'file';
 process.env.TELEGRAM_BOT_TOKEN = ''; // the bot is off, whatever .env says: telegram.e2e-spec.ts covers it
 process.env.RATE_LIMIT_PER_MINUTE = '10000'; // whatever .env says: resilience.e2e-spec.ts covers it
 process.env.QUERY_TIMEOUT_MS = '10000';
+process.env.CORS_ORIGINS = 'https://app.fitness.example,http://localhost:5173';
 
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
@@ -371,6 +372,44 @@ describe('Training Progress (e2e)', () => {
       const { errors } = await graphql(`query { member(id: "not-an-email") { id } }`);
 
       expect(errors?.[0].extensions.code).toBe('BAD_REQUEST');
+    });
+  });
+
+  describe('HTTP', () => {
+    const api = () => request(app.getHttpServer());
+    const STREAK = { query: '{ member(id: "ada@example.com") { streak } }' };
+
+    it('sends the security headers on every response, and lets GraphiQL load outside production', async () => {
+      const { headers } = await api().post('/graphql').send(STREAK).expect(200);
+
+      expect(headers).toMatchObject({ 'x-content-type-options': 'nosniff', 'x-frame-options': 'SAMEORIGIN' });
+      expect(headers['content-security-policy']).toContain("script-src 'self' 'unsafe-inline' https://unpkg.com");
+      expect(headers['x-powered-by']).toBeUndefined();
+    });
+
+    it('lets the web apps in CORS_ORIGINS call GraphQL from a browser, and read Retry-After', async () => {
+      const preflight = await api()
+        .options('/graphql')
+        .set('Origin', 'http://localhost:5173')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type,baggage')
+        .expect(204);
+      expect(preflight.headers).toMatchObject({
+        'access-control-allow-origin': 'http://localhost:5173',
+        'access-control-allow-methods': 'GET,POST',
+        'access-control-allow-headers': 'content-type,baggage',
+        'access-control-max-age': '600',
+      });
+
+      const { headers } = await api().post('/graphql').set('Origin', 'https://app.fitness.example').send(STREAK).expect(200);
+      expect(headers['access-control-allow-origin']).toBe('https://app.fitness.example');
+      expect(headers['access-control-expose-headers']).toContain('Retry-After');
+    });
+
+    it('gives other origins no CORS headers, so that browsers block them', async () => {
+      const { headers } = await api().post('/graphql').set('Origin', 'https://elsewhere.example').send(STREAK).expect(200);
+
+      expect(headers['access-control-allow-origin']).toBeUndefined();
     });
   });
 });

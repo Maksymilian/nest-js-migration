@@ -458,6 +458,8 @@ Policies are application-layer handlers: they load one aggregate, call one metho
 
 Code first, Apollo driver ([`graphql/quick-start.md`](nestjs/graphql/quick-start.md)). Until authentication exists, the member is chosen with `member(id:)`; later this becomes `me`, with the id taken from the access token.
 
+**Browsers (`configureHttp()`):** every response of both services carries the security headers of `app.useSecurityHeaders()` ([`security/helmet.md`](nestjs/security/helmet.md): Helmet 8's defaults, without the `helmet` package), set first so that error responses and the middleware's own have them too. Outside production, Training Progress' Content Security Policy also allows GraphiQL on `/graphql` (`'unsafe-inline'` scripts and `https://unpkg.com`); in production, GraphiQL is off and the policy is the default. CORS ([`security/cors.md`](nestjs/security/cors.md), `app.enableCors()`, which is Express' `cors` middleware) lets the web apps listed in `CORS_ORIGINS` call GraphQL from a browser: `GET` and `POST`, no cookies, preflights cached for 10 minutes, and `Retry-After` and `X-RateLimit-*` readable by the app. Without `CORS_ORIGINS` (the default), browsers on other origins are blocked. Workout Tracking has no CORS: equipment and services call it, not browsers.
+
 ```graphql
 scalar DateTime
 
@@ -800,7 +802,9 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Calendar (generic) | `date-fns` | ISO weeks and period boundaries without hand-written date arithmetic |
 | Cache | `@nestjs/cache-manager` with `@keyv/redis` | Official recipe |
 | Health | `@nestjs/terminus` | Official recipe |
-| Rate limit | `@nestjs/throttler` ([`security/rate-limiting.md`](nestjs/security/rate-limiting.md)) | Official recipe; in memory, so per instance (section 16.1) |
+| Security headers | `app.useSecurityHeaders()` ([`security/helmet.md`](nestjs/security/helmet.md)) | Built into Nest 12.1, with Helmet 8's defaults: no extra package (section 6.4) |
+| CORS | `app.enableCors()` ([`security/cors.md`](nestjs/security/cors.md)), Training Progress only, with `CORS_ORIGINS` | Official recipe: Express' `cors` middleware (section 6.4) |
+| Rate limit | `@nestjs/throttler` ([`security/rate-limiting.md`](nestjs/security/rate-limiting.md)) with `RATE_LIMIT=on` (off by default); AWS WAF rate-based rule in AWS | Official recipe; in memory, so per instance; WAF counts for all instances at the edge (section 16.1) |
 | Timeouts | `@nestjs/resilience` ([`reliability/resilience.md`](nestjs/reliability/resilience.md)) | Official package: `@Timeout()` on entrypoints, mapped to 504 and GraphQL's `TIMEOUT`, and events on diagnostics channels that `@app/telemetry` counts. Retries, circuit breakers and bulkheads come with it (section 16.5) |
 | Fault injection (local) | [Toxiproxy](https://github.com/Shopify/toxiproxy) in Compose | The Nest docs have no recipe. A TCP proxy per connection, driven by an API: latency, a dependency that stops answering or is down, without touching the services' code |
 | Validation | `class-validator`, `class-transformer` | Official recipe |
@@ -912,6 +916,12 @@ Both services limit how many requests one caller sends, and how long a query may
 - **In the trace:** the span the guard runs in, Nest's span of the handler (REST) or the root field's `graphql.resolve` (GraphQL), gets a `rate_limit.rejected` event (`nestjs.handler`, `rate_limit.limit`, `rate_limit.window_seconds`, `rate_limit.retry_after_seconds`) and the error status, so the trace shows why the request stopped. The HTTP server span keeps `http.response.status_code: 429` without an error status: OpenTelemetry leaves a server's 4xx unset. In Tempo: `{ event:name = "rate_limit.rejected" }`.
 - Not limited: the health checks (Kubernetes' probes), Telegram's webhook (every member's updates come from Telegram's few addresses) and RabbitMQ's messages.
 - **Per instance:** the counts are in each instance's memory, so with N instances a caller gets up to N times the limit. Behind a load balancer, `req.ip` is the balancer's until Express trusts it (`trust proxy`, in the rate limiting docs): to set when the services are deployed.
+- **Off by default, locally and in AWS:** only `RATE_LIMIT=on` runs this guard: locally, to try it, and wherever nothing in front of the service limits callers. Off (the default; the throttler's `skipIf`), every request passes, uncounted, without the `X-RateLimit-*` headers. In AWS, an **AWS WAF rate-based rule** limits callers instead, in the web ACL of the load balancer in front of them. WAF keeps one count for all the instances, so the limit no longer multiplies with them, and it sees the caller's address without `trust proxy`. The rule mirrors the local one:
+  - aggregate by IP: the source IP, or the forwarded IP (`X-Forwarded-For`) when CloudFront is in front;
+  - an evaluation window of 60 seconds, and `RATE_LIMIT_PER_MINUTE` as the limit;
+  - a scope-down statement that leaves out `/health/` and `/telegram/updates`, as `@SkipThrottle()` does here;
+  - the Block action with a custom response: 429, `Retry-After: 60`, and for `/graphql` a JSON body in GraphQL's shape (`{"errors":[{"message":"Too many requests","extensions":{"code":"TOO_MANY_REQUESTS"}}]}`, without `data` or `path`), so that clients see the same rejection as locally.
+  - Its rejections are WAF's CloudWatch metrics (`AWS/WAFV2`, `BlockedRequests` by rule), not `rate_limit_rejected_requests_total`: for the dashboard and the *Requests rejected by the rate limit* alert, Alloy can scrape them with `prometheus.exporter.cloudwatch` (not set up yet).
 - Metric: `rate_limit.rejected_requests` (`rate_limit_rejected_requests_total`), by `nestjs.handler` (`MemberResolver.member`, `EquipmentController.get`...).
 
 ### 16.2 Timeouts
@@ -946,7 +956,7 @@ Start the service with `scripts/faults/start-through-toxiproxy.sh`, then cause t
 
 | Scenario | How | What happens | Where it shows |
 |---|---|---|---|
-| A caller over the rate limit | `RATE_LIMIT_PER_MINUTE=20` in the service's `.env` (or 600 and more requests), then `pnpm dlx autocannon -d 30 -c 5 -m POST -H 'Content-Type: application/json' -b '{"query":"{ member(id: \"ada@example.com\") { streak } }"}' http://localhost:3002/graphql` | Past 20 a minute, 429 (with `TOO_MANY_REQUESTS` over GraphQL) until the minute ends | *Rate-limited requests*, *Rejected and failed responses*, GraphQL's *Failed operations by error code*; in Tempo, `{ event:name = "rate_limit.rejected" }`; alert *Requests rejected by the rate limit* |
+| A caller over the rate limit | `RATE_LIMIT=on` and `RATE_LIMIT_PER_MINUTE=20` in the service's `.env` (or 600 and more requests), then `pnpm dlx autocannon -d 30 -c 5 -m POST -H 'Content-Type: application/json' -b '{"query":"{ member(id: \"ada@example.com\") { streak } }"}' http://localhost:3002/graphql` | Past 20 a minute, 429 (with `TOO_MANY_REQUESTS` over GraphQL) until the minute ends | *Rate-limited requests*, *Rejected and failed responses*, GraphQL's *Failed operations by error code*; in Tempo, `{ event:name = "rate_limit.rejected" }`; alert *Requests rejected by the rate limit* |
 | A slow database | `fault.sh latency training-progress-db 4000`, then query `trainingGoals` | `TIMEOUT` after `QUERY_TIMEOUT_MS`; the queries go on in the background | *Timeouts*, *Requests waiting for a database connection*, database p95; long `pg` spans in Tempo; alert *Queries timing out* |
 | A database that stops answering | `fault.sh hang training-progress-db`, then a few queries and a mutation | Queries fail with `TIMEOUT`, and their connections stay taken. New connections can't finish their handshake, so whatever needs one waits 5 s (`connectionTimeoutMillis`) and fails: a mutation with `INTERNAL_SERVER_ERROR`. Readiness `down` (503) | *Timeouts*, *Requests waiting for a database connection*; alerts *Queries timing out*, *GraphQL operations failing on the server* |
 | A database that is down | `fault.sh down workout-tracking-db`, then `GET /internal/v1/workouts/<id>` | Connections refused: 500 right away; readiness `down` (503) | *Rejected and failed responses*, *Errors and warnings* logs; alert *HTTP server errors over 5% of requests* |

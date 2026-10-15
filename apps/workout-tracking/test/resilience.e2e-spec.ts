@@ -12,6 +12,7 @@ import { migratedDatabase } from './support/migrated-database.js';
 process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
 process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off';
+process.env.RATE_LIMIT = 'on';
 process.env.RATE_LIMIT_PER_MINUTE = '3';
 process.env.QUERY_TIMEOUT_MS = '200';
 

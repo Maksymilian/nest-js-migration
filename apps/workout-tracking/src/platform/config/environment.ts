@@ -26,11 +26,11 @@ export class Environment {
   OUTBOX_RELAY: 'on' | 'off' = 'on';
 
   /**
-   * `off` where the platform's edge applies the rate limit instead (in AWS, a WAF rate-based rule:
-   * section 16.1); `on` locally, and wherever nothing in front of the service limits callers.
+   * `on` to limit callers in the service (section 16.1): locally, or wherever nothing in front of
+   * the service limits them. Off by default: in AWS, a WAF rate-based rule limits them instead.
    */
   @IsIn(['on', 'off'])
-  RATE_LIMIT: 'on' | 'off' = 'on';
+  RATE_LIMIT: 'on' | 'off' = 'off';
 
   /** Requests one caller (an IP address) may send per minute; past it, 429 (section 16). Counted per instance. */
   @IsInt()
