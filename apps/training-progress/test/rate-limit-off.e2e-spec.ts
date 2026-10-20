@@ -23,6 +23,7 @@ const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { validateEnvironment } = await import('../src/platform/config/environment.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 
 /** Section 16.1: without RATE_LIMIT=on (in AWS, WAF limits callers in front of the service), nothing is limited here. */
 describe('Training Progress: rate limit off (e2e)', () => {
@@ -39,6 +40,9 @@ describe('Training Progress: rate limit off (e2e)', () => {
       .overrideProvider(CACHE_MANAGER)
       .useValue(createCache())
       .overrideProvider(DeadLetterTopology)
+      .useValue({})
+      // No Redis: the locks are in memory, for this one instance.
+      .overrideProvider(RedisLockStore)
       .useValue({})
       .compile();
     app = configureHttp(moduleRef.createNestApplication());

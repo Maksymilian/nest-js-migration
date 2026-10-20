@@ -30,6 +30,18 @@ export class Environment {
   @IsIn(['on', 'off'])
   OUTBOX_RELAY: 'on' | 'off' = 'on';
 
+  /** `off` reads the read models from PostgreSQL every time, without Redis (section 8.1): to compare, in load tests. */
+  @IsIn(['on', 'off'])
+  READ_CACHE: 'on' | 'off' = 'on';
+
+  /**
+   * `on`: on a miss, one caller per key loads the read model, under the key's load lock in Redis;
+   * the others wait for its value (section 8.1). `off` lets every caller that misses load it: a
+   * cache stampede, to compare.
+   */
+  @IsIn(['on', 'off'])
+  READ_CACHE_LOCK: 'on' | 'off' = 'on';
+
   /**
    * `on` to limit callers in the service (section 16.1): locally, or wherever nothing in front of
    * the service limits them. Off by default: in AWS, a WAF rate-based rule limits them instead.

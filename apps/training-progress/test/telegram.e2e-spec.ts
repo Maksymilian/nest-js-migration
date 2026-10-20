@@ -28,6 +28,7 @@ process.env.QUERY_TIMEOUT_MS = '10000';
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 
 describe('Telegram bot (e2e)', () => {
   let client: PGlite;
@@ -44,6 +45,9 @@ describe('Telegram bot (e2e)', () => {
       .overrideProvider(CACHE_MANAGER)
       .useValue(createCache())
       .overrideProvider(DeadLetterTopology)
+      .useValue({})
+      // No Redis: the locks are in memory, for this one instance.
+      .overrideProvider(RedisLockStore)
       .useValue({})
       .overrideProvider(Bot)
       .useValue(recording.bot)

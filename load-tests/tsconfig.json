@@ -1,0 +1,18 @@
+{
+  // The load tests' type check only (pnpm typecheck): k6 runs the .ts files as they are, stripping
+  // the types, so nothing is emitted. k6's runtime, not Node's: its globals (__ENV, __VU, open) and
+  // modules (k6/http, k6/options) come from @types/k6, which matches the k6 image in compose.yaml,
+  // and its console from console.d.ts. Imports name the .ts file, which is what k6 loads.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "preserve",
+    "types": ["k6"],
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["**/*.ts"]
+}

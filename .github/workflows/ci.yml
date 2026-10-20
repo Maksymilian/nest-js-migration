@@ -21,6 +21,14 @@ jobs:
     name: Lint, build and test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # For the lock store's contract (RedisLockStore): the locks expire on Redis' own clock.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -35,8 +43,10 @@ jobs:
         run: pnpm lint
       - name: Build both services
         run: pnpm build
-      - name: Unit tests
+      - name: Unit tests, and the lock store's contract on Redis
         run: pnpm test
+        env:
+          LOCK_STORE_REDIS_URL: redis://localhost:6379
       - name: E2E tests (each service on PGlite with its Liquibase changesets)
         run: pnpm test:e2e
 

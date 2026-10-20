@@ -9,6 +9,7 @@
  * and Loki. The standard variables configure the rest: OTEL_SERVICE_NAME,
  * OTEL_RESOURCE_ATTRIBUTES (deployment.environment.name, service.version), OTEL_SDK_DISABLED, and
  * OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER: `none` stops sending that signal.
+ * Alloy makes the service, its version and the environment labels of every metric.
  */
 import { register } from 'node:module';
 import { basename, dirname } from 'node:path';
@@ -29,13 +30,24 @@ import { INTERFACE } from './interface.js';
 // The loader hook lets the instrumentations patch ES modules too, such as @nestjs/* v12: the
 // service's imports load after this file, so after the hook.
 register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
-// The service is the folder of the main.js node runs (dist/apps/<service>/main.js), and the
-// environment NODE_ENV's, unless the standard variables say otherwise.
-process.env.OTEL_SERVICE_NAME ??= basename(dirname(process.argv[1] ?? 'unknown'));
-if (!process.env.OTEL_RESOURCE_ATTRIBUTES?.includes('deployment.environment.name=')) {
-  const environment = `deployment.environment.name=${process.env.NODE_ENV ?? 'development'}`;
-  process.env.OTEL_RESOURCE_ATTRIBUTES = [process.env.OTEL_RESOURCE_ATTRIBUTES, environment].filter(Boolean).join(',');
+
+/** The build's git version, written in by rspack.config.js: the commit, `-dirty` with uncommitted changes. */
+declare const BUILD_VERSION: string;
+
+/** Adds `name=value` to OTEL_RESOURCE_ATTRIBUTES, unless the variable already names it. */
+function defaultResourceAttribute(name: string, value: string): void {
+  if (!process.env.OTEL_RESOURCE_ATTRIBUTES?.includes(`${name}=`)) {
+    process.env.OTEL_RESOURCE_ATTRIBUTES = [process.env.OTEL_RESOURCE_ATTRIBUTES, `${name}=${value}`].filter(Boolean).join(',');
+  }
 }
+
+// The service is the folder of the main.js node runs (dist/apps/<service>/main.js), the
+// environment NODE_ENV's, and the version the build's, unless the standard variables say otherwise.
+// A deployment names its version (service.version=<image tag>), so that during a rolling deploy
+// the old and the new version's metrics, traces and logs can be told apart.
+process.env.OTEL_SERVICE_NAME ??= basename(dirname(process.argv[1] ?? 'unknown'));
+defaultResourceAttribute('deployment.environment.name', process.env.NODE_ENV ?? 'development');
+defaultResourceAttribute('service.version', typeof BUILD_VERSION === 'string' ? BUILD_VERSION : 'unknown');
 // The stable HTTP conventions: the request-rate alert counts http.server.request.duration.
 process.env.OTEL_SEMCONV_STABILITY_OPT_IN ??= 'http';
 // Only the libraries the services use; the variable can still change the list.

@@ -49,7 +49,7 @@ export const WORKOUT_TRACKING_BROKER = 'WORKOUT_TRACKING_BROKER';
         connection: {
           connectionString: config.get('DATABASE_URL', { infer: true }),
           min: 2,
-          max: 25,
+          max: 30,
           connectionTimeoutMillis: 5_000,
           application_name: 'workout-tracking',
         },

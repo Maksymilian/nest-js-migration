@@ -27,6 +27,7 @@ process.env.CORS_ORIGINS = 'https://app.fitness.example,http://localhost:5173';
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 const { CloudEventDeserializer } = await import('../src/platform/messaging/cloud-event.deserializer.js');
 const { WorkoutTrackingEventsController } = await import('../src/training-progress/workout-tracking-acl/workout-tracking-events.controller.js');
 const { MissEndedGoalsCommand } = await import('../src/training-progress/training-goals/application/commands/miss-ended-goals.command.js');
@@ -55,6 +56,9 @@ describe('Training Progress (e2e)', () => {
       .overrideProvider(CACHE_MANAGER)
       .useValue(cache)
       .overrideProvider(DeadLetterTopology)
+      .useValue({})
+      // No Redis: the locks are in memory, for this one instance.
+      .overrideProvider(RedisLockStore)
       .useValue({})
       .compile();
     app = configureHttp(moduleRef.createNestApplication());

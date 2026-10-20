@@ -2,7 +2,8 @@
 # with `pnpm start:dev:<app>`. `docker compose up -d --wait` starts the databases, Redis and
 # RabbitMQ. Liquibase isn't part of it: scripts/database/liquibase.sh migrates the databases.
 # `--profile observability` adds Grafana Alloy, Loki, Tempo, Prometheus and Grafana (section 15),
-# `--profile faults` adds Toxiproxy (section 16).
+# `--profile faults` adds Toxiproxy (section 16), and `--profile load-tests` k6, which
+# load-tests/k6.sh runs (section 17).
 name: fitness-platform
 
 services:
@@ -54,7 +55,8 @@ services:
   # Integration events between the services (section 7). Management UI on http://localhost:15672
   rabbitmq:
     image: rabbitmq:4-management-alpine
-    # The user (fitness/fitness) and the topology of section 7.2 come from the definitions file.
+    # The user (fitness/fitness) and the topology of section 7.2 come from the definitions file. The
+    # image's plugins, and the shovel's: moving a queue's messages to another queue (section 17.4).
     ports:
       - '5672:5672'
       - '15672:15672'
@@ -62,6 +64,7 @@ services:
       - rabbitmq:/var/lib/rabbitmq
       - ./infrastructure/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-definitions.conf:ro
       - ./infrastructure/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infrastructure/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 5s
@@ -162,6 +165,30 @@ services:
       - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana:/var/lib/grafana
     depends_on: [loki, tempo, prometheus]
+
+  # k6 (section 17): the load tests, run by load-tests/k6.sh (`docker compose run`), never started with
+  # `up`. On the Compose network, so its metrics reach Alloy (Prometheus remote write, for the k6
+  # Prometheus dashboard) and its verdict Grafana and RabbitMQ's management API; the services run on
+  # the host, through host.docker.internal.
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load-tests]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      WORKOUT_TRACKING_URL: http://host.docker.internal:3001
+      TRAINING_PROGRESS_URL: http://host.docker.internal:3002
+      GRAFANA_URL: http://grafana:3000
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      K6_PROMETHEUS_RW_SERVER_URL: http://alloy:9091/api/v1/metrics/write
+      # The statistics the dashboard reads: k6_http_req_duration_p95, _p99, _min, _max, _avg, _med.
+      K6_PROMETHEUS_RW_TREND_STATS: p(95),p(99),min,max,avg,med
+      K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+      # The series end with the test, instead of lingering for Prometheus' 5 minutes.
+      K6_PROMETHEUS_RW_STALE_MARKERS: 'true'
+    volumes:
+      - ./load-tests:/load-tests:ro
+      - ./var/load-tests:/results
 
 volumes:
   workout-tracking-db:

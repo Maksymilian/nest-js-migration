@@ -23,6 +23,7 @@ process.env.QUERY_TIMEOUT_MS = '200';
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 const { TrainingGoalQueries } = await import('../src/training-progress/training-goals/application/queries/training-goal-queries.js');
 
 /** Section 16: the rate limit (3 requests per minute here) and the timeout of query fields (200 ms here). */
@@ -44,6 +45,9 @@ describe('Training Progress: rate limit and timeouts (e2e)', () => {
       .overrideProvider(CACHE_MANAGER)
       .useValue(createCache())
       .overrideProvider(DeadLetterTopology)
+      .useValue({})
+      // No Redis: the locks are in memory, for this one instance.
+      .overrideProvider(RedisLockStore)
       .useValue({})
       .overrideProvider(TrainingGoalQueries)
       .useValue(hangingTrainingGoalQueries)

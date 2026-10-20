@@ -91,6 +91,7 @@ pnpm test                 # unit tests: aggregates (given/when/then), value obje
 pnpm test:e2e             # each service on in-process PostgreSQL (PGlite) with its Liquibase changesets
 pnpm lint                 # oxlint and the architecture check
 pnpm check:architecture   # context, aggregate and layer boundaries (dependency-cruiser)
+LOCK_STORE_REDIS_URL=redis://localhost:6379 pnpm test   # also the lock store's contract, on Compose's Redis (as in CI)
 ```
 
 `pnpm build` runs the architecture check before compiling.
@@ -135,7 +136,7 @@ With `RATE_LIMIT=on`, each service rejects a caller past `RATE_LIMIT_PER_MINUTE`
 ```bash
 docker compose --profile faults --profile observability up -d --wait   # + Toxiproxy (API on localhost:8474)
 scripts/faults/start-through-toxiproxy.sh training-progress            # instead of pnpm start:dev:training-progress
-sipts/faults/fault.sh latency training-progress-db 4000  cr            # then query: TIMEOUT after QUERY_TIMEOUT_MS
+scripts/faults/fault.sh latency training-progress-db 4000             # then query: TIMEOUT after QUERY_TIMEOUT_MS
 scripts/faults/fault.sh list                                           # hang, down, up, clear: see the script
 scripts/faults/fault.sh clear
 ```
@@ -143,6 +144,22 @@ scripts/faults/fault.sh clear
 The dashboard's **Rate limit, timeouts and faults** row shows rejections, timeouts, failed responses and connections waiting, with each fault as an annotation.
 
 The rate limit is off by default: set `RATE_LIMIT=on` in the service's `.env` to run it locally. In AWS, an AWS WAF rate-based rule on the load balancer limits callers instead: one count for all instances (section 16.1 has the rule's settings).
+
+### Load tests (k6)
+
+k6 in Docker sends the members' apps' traffic, 90% reads, over REST and GraphQL, then checks the verdict: p95 under 100 ms (200 ms for a spike), no failed request, 5xx or GraphQL error, every recorded workout in the training log exactly once, no dead letter, nothing left in a queue or an outbox, no failed trace (Tempo), no error log (Loki), no alert fired (section 17 of `docs/architecture.md`):
+
+```bash
+docker compose --profile observability up -d --wait
+load-tests/seed.sh                          # 1,000 members with a year of workouts, in both databases
+pnpm build && pnpm start:prod:workout-tracking   # and training-progress, in another terminal
+load-tests/k6.sh smoke                      # then stress, spike, streak-stampede
+load-tests/k6.sh stress -e PEAK_RATE=150    # k6 options after the test's name
+```
+
+k6 runs as Compose's `k6` service (profile `load-tests`) and writes its metrics through Alloy to Prometheus: Grafana's **k6 Prometheus** dashboard (Grafana Labs' [19665](https://grafana.com/grafana/dashboards/19665-k6-prometheus/), provisioned, linked from **Fitness platform**) shows each run by its **Test ID**, which `k6.sh` prints.
+
+`streak-stampede` compares the read cache's modes (section 8.1): start Training Progress with `READ_CACHE=off`, with `READ_CACHE_LOCK=off` (a cache stampede), and with the defaults (the load lock), and compare p95 and the dashboard's *Loads from PostgreSQL*. `backlog` and `reconcile` move messages left in RabbitMQ to a new version of a queue and prove nothing was lost or applied twice (section 17.4). Each run is an annotation on the dashboard, and its reports go to `var/load-tests/<test id>/`: `dashboard.html` (k6's web dashboard), `metrics.json`, `summary.json` and `console.log`; `service_version` on the metrics compares two versions during a deploy.
 
 ### Database releases and rollbacks
 

@@ -660,6 +660,28 @@ Based on [`data/caching.md`](nestjs/data/caching.md): `@nestjs/cache-manager` wi
 
 The training log isn't cached: it's paginated, and the `(member_id, started_at desc, id desc)` index serves it. Training goals aren't cached either: they're few, and members change them themselves.
 
+### 8.1 A cache stampede, and the load lock
+
+When a cached key is missing (it expired, an event forgot it, Redis lost it), every request for it at that moment misses and reads the same thing from PostgreSQL: a cache stampede. Midnight UTC is one for streaks, which all expire at the end of the UTC day; a popular member recording a workout is another, since it forgets their streak while many apps read it.
+
+- **The load lock.** On a miss, `ReadCache` takes the key's lock, `read-cache:<key>`, with `@nestjs/locks` ([`reliability/locks.md`](nestjs/reliability/locks.md)) on Redis: `RedisLockStore`, the docs' Redis store (one Lua script per method), on a connection of its own. The holder looks in the cache again, loads the read model, stores it and releases the lock. The others, on any instance, look in the cache every 10 ms, then up to every 100 ms, and try the lock again each time, so that when a holder fails, the next caller loads it.
+- **At most 10 seconds.** The lock lives 10 s without a renewal: a holder that dies frees it within 10 s. While the holder is alive, `@nestjs/locks` renews it every `ttl / 3`; the waiters give up after 10 s and load the read model themselves. Taking or releasing the lock is bounded like a cache call (250 ms): a Redis that stops answering doesn't hold a read.
+- **Redis down:** the lock can't be taken, and every caller loads, as with the cache off.
+- **No fencing.** Two loaders at once (a lock lost in a pause, or the 10 s passed) store the same value. So the read cache takes no fencing token, and Redis' eviction policy doesn't threaten these locks the way it does the docs' scheduled jobs.
+- **Not prevented:** different keys missing at once (each loads once, so midnight still loads every member's streak once); and the invalidation race, where a load that read PostgreSQL before an event forgot the key stores the old value until its TTL.
+- **Switches, to compare in load tests (section 17.2):** `READ_CACHE=off` reads PostgreSQL every time, without Redis; `READ_CACHE_LOCK=off` lets every caller that misses load: the stampede. Both are `on` by default.
+- **Metric:** `read_cache.reads` (`read_cache_reads_total`), by `read_cache.read_model` (the key's first part: `streak`, `progress-summary`, `personal-records`) and `read_cache.result`: `hit`, `load` (from PostgreSQL), `wait` (another caller's load), `off`, or `unavailable` (Redis didn't answer). The dashboard's *Read cache and load tests* row shows them.
+
+Measured with section 17.2's `streak-stampede` (2 members' streaks, 300 reads a second, a workout every 2 seconds, and `fault.sh latency training-progress-db 100` so that a load costs what a heavy query does), on a laptop:
+
+| Training Progress | Loads of the streak | Reads that waited | Readers' p95 / p99 | Verdict |
+|---|---|---|---|---|
+| `READ_CACHE_LOCK=off` | 557: about 12 identical queries per miss | none | 2 ms / 105 ms | passes |
+| defaults (the load lock) | 45: one per miss | 420 | 2.2 ms / 108 ms | passes |
+| `READ_CACHE=off` | 16,016: every read | none | 4.2 s / 4.2 s | fails: p95, *Requests waiting for a database connection*, *RabbitMQ queue with 5 or more messages* |
+
+The lock leaves the readers' latency as it was (the waiters wait for the holder's load) and cuts what reaches PostgreSQL. Without it, the stampede costs 12 times the queries per miss: here the pool absorbs them, but with a slower query or more readers per key it fills up, as with the cache off.
+
 ## 9. Validation
 
 | Boundary | What's checked | How |
@@ -801,11 +823,13 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Telegram bot | [grammY](https://grammy.dev), with `@nestjs/webhooks` for the webhook ([`http/webhooks.md`](nestjs/http/webhooks.md)) | The Nest docs have no Telegram recipe. grammY routes bot commands and buttons and types the Bot API; `@nestjs/webhooks` verifies Telegram's secret token and deduplicates updates with the outbox's inbox |
 | Calendar (generic) | `date-fns` | ISO weeks and period boundaries without hand-written date arithmetic |
 | Cache | `@nestjs/cache-manager` with `@keyv/redis` | Official recipe |
+| Distributed locks | `@nestjs/locks` ([`reliability/locks.md`](nestjs/reliability/locks.md)) with the docs' Redis store (`RedisLockStore`, on `@redis/client`) | Official package: the read cache's load lock, one loader per key on any instance (section 8.1). Its contract suite runs against a real Redis in CI |
 | Health | `@nestjs/terminus` | Official recipe |
 | Security headers | `app.useSecurityHeaders()` ([`security/helmet.md`](nestjs/security/helmet.md)) | Built into Nest 12.1, with Helmet 8's defaults: no extra package (section 6.4) |
 | CORS | `app.enableCors()` ([`security/cors.md`](nestjs/security/cors.md)), Training Progress only, with `CORS_ORIGINS` | Official recipe: Express' `cors` middleware (section 6.4) |
 | Rate limit | `@nestjs/throttler` ([`security/rate-limiting.md`](nestjs/security/rate-limiting.md)) with `RATE_LIMIT=on` (off by default); AWS WAF rate-based rule in AWS | Official recipe; in memory, so per instance; WAF counts for all instances at the edge (section 16.1) |
 | Timeouts | `@nestjs/resilience` ([`reliability/resilience.md`](nestjs/reliability/resilience.md)) | Official package: `@Timeout()` on entrypoints, mapped to 504 and GraphQL's `TIMEOUT`, and events on diagnostics channels that `@app/telemetry` counts. Retries, circuit breakers and bulkheads come with it (section 16.5) |
+| Load tests (local) | [k6](https://grafana.com/docs/k6/) 2.3, Compose's `k6` service (`load-tests/k6.sh`), its metrics through Alloy to Prometheus, Grafana Labs' k6 Prometheus dashboard | The Nest docs have no recipe. Scripted in JavaScript, open and closed workload models (arrival rates for spikes), thresholds that fail the run; nothing to install. Prometheus remote write rather than InfluxDB, which k6's older dashboards read: no fourth store (section 17) |
 | Fault injection (local) | [Toxiproxy](https://github.com/Shopify/toxiproxy) in Compose | The Nest docs have no recipe. A TCP proxy per connection, driven by an API: latency, a dependency that stops answering or is down, without touching the services' code |
 | Validation | `class-validator`, `class-transformer` | Official recipe |
 | Configuration | `@nestjs/config` | Official recipe |
@@ -853,6 +877,7 @@ service --OTLP/HTTP + Basic Auth--> Grafana Alloy --traces--> Tempo ----span met
                                                   --logs----> Loki                                  |
                                                   --metrics-> Prometheus <---------------------------+
 RabbitMQ (Prometheus plugin), Redis (INFO) <--scraped by Alloy; their container logs --> Alloy --> Loki
+k6 (load tests, section 17) --Prometheus remote write, Compose network only--> Alloy --> Prometheus
                                        Grafana: data sources, dashboards and alert rules, provisioned
 ```
 
@@ -860,6 +885,7 @@ RabbitMQ (Prometheus plugin), Redis (INFO) <--scraped by Alloy; their container 
 
 - `libs/telemetry/src/instrumentation.ts` starts the SDK before the service: `node --import ./dist/apps/<service>/instrumentation.js` (the `start:dev:<service>` and `start:prod:<service>` scripts; `rspack.config.js` builds it). It registers the ES module loader hook (`@nestjs/*` v12 are ES modules), then the automatic instrumentations of what the services use: HTTP, Express, Nest, GraphQL, pg, Redis, amqplib, undici and the Node.js runtime. Database, Redis and outbound HTTP spans only exist inside a trace, so the outbox relay's polling isn't one; the health probes aren't traced.
 - Everything goes over OTLP/HTTP, with W3C trace context and baggage. Metrics are cumulative (Prometheus'), every 10 s, with the stable HTTP conventions (`http.server.request.duration`, by `http.route`, method and status). The standard variables configure the rest: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SDK_DISABLED`; the service name defaults to the folder of `main.js`.
+- **The version:** `service.version`, so that during a rolling deploy the old and the new version's metrics, traces and logs can be told apart. A deployment names it (`OTEL_RESOURCE_ATTRIBUTES=service.version=<image tag>`); otherwise it's the build's, `git describe --tags --always --dirty`, which `rspack.config.js` writes into `instrumentation.js` (`7e309c2-dirty`: a commit, with uncommitted changes).
 - **GraphQL:** every request is `POST /graphql` to the HTTP metric, so `GraphqlOperationMetricsPlugin` (an Apollo plugin, `@Plugin()`) records `graphql.server.operation.duration` per operation: by `graphql.operation.type` and `graphql.root_fields` (the schema bounds them; operation names are the client's, without limit), and `error.type` when it fails. Introspection isn't recorded. The GraphQL instrumentation adds the spans (`allowValues: false`: argument values in the query text become `*`).
 - **Logs:** `TelemetryLogger` (Nest's `ConsoleLogger`) also emits each message as an OpenTelemetry log record, with the flow id and `logger.name` (the Nest context). Inside a trace, each message is a span of its own, `log <logger>`, a child of the active span, and its record carries that span's ids: a REST handler or a GraphQL resolver that logs twice shows two sibling log spans under its span (the Nest handler span, or `graphql.resolve <field>`), each linked to its log (Grafana opens one from the other); an error log marks its span failed. Outside a trace (startup), it's a record without a span. Where logs go is configuration only: `LOG_CONSOLE=off` (validated with the rest of the environment) stops the console output, for production where logs only go to OpenTelemetry; `OTEL_LOGS_EXPORTER=none` (and `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`) stops sending that signal; Alloy decides the destination. There is no log file.
 
@@ -871,11 +897,13 @@ RabbitMQ (Prometheus plugin), Redis (INFO) <--scraped by Alloy; their container 
 
 ### 15.3 Grafana Alloy and transport security
 
-Alloy (`infrastructure/alloy/config.alloy`) is the one collector. The services only see its OTLP/HTTP port, which requires Basic Auth: a bcrypt htpasswd file (gitignored) from `scripts/observability/telemetry-credentials.sh`, which also writes the matching `OTEL_EXPORTER_OTLP_HEADERS` into each service's `.env`. Without the file, Alloy doesn't start; a request without the right credentials gets 401. Alloy copies the service and environment onto every metric (`service_name`, `deployment_environment_name`), sends traces to Tempo, logs to Loki's OTLP endpoint (trace id, span id and flow id become structured metadata: `trace_id`, `span_id`, `session_id`) and metrics to Prometheus (remote write). It also scrapes, with nothing to install on them:
+Alloy (`infrastructure/alloy/config.alloy`) is the one collector. The services only see its OTLP/HTTP port, which requires Basic Auth: a bcrypt htpasswd file (gitignored) from `scripts/observability/telemetry-credentials.sh`, which also writes the matching `OTEL_EXPORTER_OTLP_HEADERS` into each service's `.env`. Without the file, Alloy doesn't start; a request without the right credentials gets 401. Alloy copies the service, its version and the environment onto every metric (`service_name`, `service_version`, `deployment_environment_name`), sends traces to Tempo, logs to Loki's OTLP endpoint (trace id, span id and flow id become structured metadata: `trace_id`, `span_id`, `session_id`) and metrics to Prometheus (remote write). It also scrapes, with nothing to install on them:
 
 - **RabbitMQ:** its built-in Prometheus plugin, per queue (`/metrics/detailed`: `rabbitmq_detailed_queue_messages`, `_ready`, `_unacked`, `_consumers`, `_messages_acked_total`...) and the node (`/metrics`);
 - **Redis:** its own `INFO`, through Alloy's embedded exporter (`redis_up`, `redis_memory_used_bytes`, `redis_keyspace_hits_total`, `redis_evicted_keys_total`...);
 - **their containers' logs**, through the Docker API, as `service_name` `rabbitmq` and `redis`.
+
+It also receives **k6's metrics** during load tests (section 17): Prometheus remote write on port 9091 (`prometheus.receive_http`), forwarded to Prometheus as they are (`k6_*`, by `testid`). That port is only on the Compose network, where the `k6` service runs, like Prometheus' own receiver: k6 isn't a service of the platform, and nothing outside Compose can write there.
 
 Only Alloy's OTLP port (and its UI) and Grafana are published, on 127.0.0.1; Loki, Tempo and Prometheus are only reachable inside the Compose network. Basic Auth over plain HTTP is for the local machine; anywhere else, Alloy's receiver also needs TLS.
 
@@ -884,7 +912,8 @@ Only Alloy's OTLP port (and its UI) and Grafana are published, on 127.0.0.1; Lok
 Grafana (`http://localhost:3000`, `admin` and `GRAFANA_ADMIN_PASSWORD` from `.env`) gets everything from `infrastructure/grafana/`, provisioned: change it there, not in Grafana.
 
 - **Data sources**, linked both ways: a log's `trace_id` opens its trace in Tempo, a span opens its logs in Loki, Tempo's service map reads Prometheus.
-- **Fitness platform** dashboard (`env`, `service`, `interface` and `flow` variables): the alert rules' state; HTTP requests per minute by service and endpoint, 5xx errors, p95 duration and the busiest endpoints; GraphQL operations per minute by type and root fields, failures by error code and p95 duration; rate-limited requests by handler, timeouts by entrypoint, rejected and failed responses, and requests waiting for a database connection, with the faults of section 16 as annotations; Tempo's service graph and recent traces; a flow's traces and logs; database duration and connections, event loop delay and utilization, heap; RabbitMQ dead letters, messages, ready and unacknowledged, acknowledgements per minute and consumers per queue, node memory; Redis up, memory and maxmemory, hit ratio, commands per second, clients, evictions and expirations; the error and warning logs of the services, RabbitMQ and Redis.
+- **Fitness platform** dashboard (`env`, `service`, `version`, `interface` and `flow` variables): the alert rules' state; HTTP requests per minute by service (and version) and endpoint, 5xx errors and p95 duration by version, the busiest endpoints; GraphQL operations per minute by type and root fields, failures by error code and p95 duration; rate-limited requests by handler, timeouts by entrypoint, rejected and failed responses, and requests waiting for a database connection, with the faults of section 16 as annotations; the read cache's reads by result, loads from PostgreSQL and database operations per second, with the load tests of section 17 as annotations; Tempo's service graph and recent traces; a flow's traces and logs; database duration and connections, event loop delay and utilization, heap; RabbitMQ dead letters, messages, ready and unacknowledged, acknowledgements per minute and consumers per queue, node memory; Redis up, memory and maxmemory, hit ratio, commands per second, clients, evictions and expirations; the error and warning logs of the services, RabbitMQ and Redis.
+- **k6 Prometheus** dashboard: Grafana Labs' own for k6 ([19665](https://grafana.com/grafana/dashboards/19665-k6-prometheus/), revision 3), changed only for provisioning (a fixed uid, `k6-prometheus`, the Prometheus data source by default, the links, the load tests' annotations). A load test's side of the run, by **Test ID** (`testid`, which `load-tests/k6.sh` sets to `<test>-<UTC time>`): virtual users, request rate and failures, latency by statistic (p95, p99, min, max, average, median) and by request name, checks. The two dashboards link to each other.
 - **Alert rules** (`provisioning/alerting/alert-rules.yaml`), evaluated every minute on Prometheus:
 
 | Rule | PromQL, in short | Fires when |
@@ -960,7 +989,7 @@ Start the service with `scripts/faults/start-through-toxiproxy.sh`, then cause t
 | A slow database | `fault.sh latency training-progress-db 4000`, then query `trainingGoals` | `TIMEOUT` after `QUERY_TIMEOUT_MS`; the queries go on in the background | *Timeouts*, *Requests waiting for a database connection*, database p95; long `pg` spans in Tempo; alert *Queries timing out* |
 | A database that stops answering | `fault.sh hang training-progress-db`, then a few queries and a mutation | Queries fail with `TIMEOUT`, and their connections stay taken. New connections can't finish their handshake, so whatever needs one waits 5 s (`connectionTimeoutMillis`) and fails: a mutation with `INTERNAL_SERVER_ERROR`. Readiness `down` (503) | *Timeouts*, *Requests waiting for a database connection*; alerts *Queries timing out*, *GraphQL operations failing on the server* |
 | A database that is down | `fault.sh down workout-tracking-db`, then `GET /internal/v1/workouts/<id>` | Connections refused: 500 right away; readiness `down` (503) | *Rejected and failed responses*, *Errors and warnings* logs; alert *HTTP server errors over 5% of requests* |
-| A slow or dead cache | `fault.sh hang training-progress-redis`, then query `streak` | `ReadCache` gives up after 250 ms and reads PostgreSQL: answers stay right, about 250 ms slower; a warning per read | Duration p95, *Errors and warnings* logs. The Redis alerts don't fire: Alloy reads Redis directly |
+| A slow or dead cache | `fault.sh hang training-progress-redis`, then query `streak` | `ReadCache` gives up after 250 ms and reads PostgreSQL: answers stay right, about 250 ms slower; a warning every 10 seconds | Duration p95, *Errors and warnings* logs. The Redis alerts don't fire: Alloy reads Redis directly |
 | The producer cut from RabbitMQ | `fault.sh down workout-tracking-rabbitmq`, then record a workout | Still 201: the event waits in the outbox, and the relay retries (20 attempts over 30 to 60 minutes); delivered after `fault.sh up` | Nothing in RabbitMQ's panels; `GET /internal/v1/admin/outbox/stats` (no outbox metric yet, section 16.5) |
 | The consumer cut from RabbitMQ | `fault.sh down training-progress-rabbitmq`, then record workouts | Messages wait in the queue; readiness `degraded` | *Messages per queue*; alerts *RabbitMQ queue with 5 or more messages*, then *messages not consumed for 5 minutes* |
 
@@ -969,6 +998,92 @@ Start the service with `scripts/faults/start-through-toxiproxy.sh`, then cause t
 - **A circuit breaker for PostgreSQL** (a `database` preset of `@nestjs/resilience`): once most queries fail or time out, answer 503 at once instead of piling more queries on a pool that is already full. `resilience_events_total{resilience_event="circuit-open"}` already counts its transitions: alert on them.
 - **Stop the timed-out queries:** pg's client-side `query_timeout` at `QUERY_TIMEOUT_MS`, so a timed-out query gives its connection back; a `statement_timeout` for Workout Tracking too.
 - **An outbox metric** (messages waiting, age of the oldest) and its alert: today a producer cut from RabbitMQ only shows in the outbox stats route.
-- **A cache fallback counter** in `ReadCache` and its alert: the cache as the service sees it, not only as Alloy does.
+- **An alert on the cache's fallback:** `read_cache_reads_total{read_cache_result="unavailable"}` (section 8.1) counts the reads Redis didn't answer, the cache as the service sees it, not only as Alloy does; no rule fires on it yet.
 - **An alert for a service that stops reporting:** its runtime metrics, sent every 10 s, are missing.
 - **A shared rate limit**, in Redis (the community storage of the rate limiting docs) or at the ingress, once there are several instances.
+
+## 17. Load tests (k6)
+
+A load test is passed when the platform answers fast enough **and** leaves nothing behind: no error anywhere, every event delivered once, nothing dead-lettered or stuck, no alert. The traffic is the members' apps', mostly reads, over REST and GraphQL; the verdict comes after it, from the APIs, RabbitMQ and Grafana. Everything runs locally against one instance of each service.
+
+### 17.1 Running them
+
+- **k6 2.3 in Compose** (`grafana/k6:2.3.0`, the `k6` service, profile `load-tests`), which `load-tests/k6.sh <test>` runs with `docker compose run`: nothing to install. The tests are TypeScript (`load-tests/<test>.ts`, their helpers in `load-tests/lib/`): k6 runs them as they are, stripping the types, and `pnpm typecheck` checks them against k6's API (`load-tests/tsconfig.json`, `@types/k6` at the image's version). On the Compose network, it reaches Grafana, RabbitMQ's management API and Alloy by name, and the services, which run on the host, through `host.docker.internal` (`host-gateway`). The script reads the admin tokens from the services' `.env`, Grafana's password from `.env` and RabbitMQ's user from Workout Tracking's `RABBITMQ_URL`; extra arguments go to `k6 run` (`-e PEAK_RATE=150`). It exits with k6's code: 0 when every threshold passed, 99 when one failed. Each run is a region annotation on the dashboards (tag `load-test`, purple), and its reports go to `var/load-tests/<test id>/`: k6's web dashboard as `dashboard.html` (`K6_WEB_DASHBOARD`, `K6_WEB_DASHBOARD_EXPORT`; k6 skips it for a run shorter than a few of its 10-second periods, and `K6_WEB_DASHBOARD=false` turns it off), every data point as `metrics.json` (`--out json`), the end-of-test summary as `summary.json`, and what the run printed, the verdict included, as `console.log`.
+- **k6's metrics in Grafana:** k6 writes them with its Prometheus remote write output (`experimental-prometheus-rw`, built in) to Alloy, every 5 seconds, which forwards them to Prometheus (section 15.3). Each run is tagged `testid=<test>-<UTC time>` (`TEST_ID`, which also starts its recording ids and names its reports' folder), and its trends are written as the statistics the **k6 Prometheus** dashboard reads (`K6_PROMETHEUS_RW_TREND_STATS`: p95, p99, min, max, average, median). Stale markers end the series with the run. Pick the run in the dashboard's **Test ID**; the **Fitness platform** dashboard shows the services meanwhile.
+- **The members:** `load-tests/seed.sh` writes them into both databases: `load-0001@example.com` to `load-1000@example.com`, each with a paired bike, treadmill or rower and a workout a day for the last year; the first 20 (the hot ones) two a day for 1,500 days, a long streak to compute. About 420,000 workouts per database, recorded in Workout Tracking and logged in Training Progress with the same ids, as if their events had been delivered. The ids are the md5 of a name written as a UUID, which `load-tests/lib/members.ts` computes too, so a test knows a member's equipment without asking. Running it again changes nothing; `--remove` deletes the members' rows and cached read models; `--members`, `--days`, `--hot` and `--hot-days` change the volume (`--days 1825`: about 1.8 million). Volume for load tests and query plans, not test records, so it isn't a changeset.
+- Both services running (`pnpm start:prod:<service>` measures the build rather than the watch mode), and the `observability` profile: the verdict reads Grafana.
+
+### 17.2 The tests
+
+| Test | Traffic | p95 under |
+|---|---|---|
+| `smoke` | 2 members, an action a second each, 30 s. Run it first: it proves the services, the seed and Grafana are ready | 100 ms |
+| `stress` | The usual traffic at `BASE_RATE` (30 actions a second) for a minute, rising to `PEAK_RATE` (100) over 2 minutes, held for `HOLD` (3 minutes) | 100 ms |
+| `spike` | The usual traffic at `BASE_RATE` (20) for a minute, `SPIKE_RATE` (200) within 10 seconds, held for a minute, then back | 200 ms |
+| `streak-stampede` | Midnight UTC: the cached streaks forgotten, then `SPIKE_RATE` (300) streak reads a second at once, for `STAMPEDE_MEMBERS` (2) popular members, while they record a workout every 2 seconds. Run it with each cache mode of section 8.1 and compare the loads | 200 ms |
+| `backlog`, `reconcile` | Messages left in RabbitMQ and moved to a new queue (section 17.4) | |
+
+`P95_MS` changes the limit. The rates are open (`ramping-arrival-rate`): new requests keep arriving at the set rate however slow the answers get, as members' apps do, so a slow service shows as latency, not as fewer requests. An action is one request, or two (a list, then one of its items).
+
+The usual traffic (`load-tests/lib/traffic.ts`) picks one action per iteration, by weight: 90 reads, 10 writes.
+
+| Weight | Interface | Action |
+|---|---|---|
+| 10 | REST | A member's workouts, then one of them |
+| 5 | REST | A member's 100 latest workouts |
+| 5 | REST | A member's equipment |
+| 30 | GraphQL | `MemberProgress`: the streak, this week's progress summary, personal records, active goals with their progress |
+| 15 | GraphQL | `TrainingLog`, and its second page 3 times in 10 |
+| 15 | GraphQL | `ProgressSummaries`: this week, month and year |
+| 10 | GraphQL | `TrainingGoals`, each with its progress (one query per goal, section 6.4) |
+| 7 | REST | Record a workout started now. One time in 10, the previous recording again instead, which must return the same workout (200) |
+| 3 | GraphQL | `setTrainingGoal` for this month and the next |
+
+Reads go to any member; recordings to the 50 writers (the members after the hot ones), whose recordings the verdict reconciles. Every request is tagged with its route or operation (`name`) and its interface (`rest`, `graphql`), and checked for its expected status.
+
+### 17.3 The verdict
+
+Every criterion is a k6 threshold; one that fails fails the run. The verdict runs in `teardown()`, after the traffic.
+
+| Criterion | Threshold | How it's checked |
+|---|---|---|
+| Fast enough | `http_req_duration{phase:traffic}`: `p(95)` under the test's limit, overall, for REST and for GraphQL | k6 |
+| No failed request | `http_req_failed{phase:traffic}` 0%, `checks{phase:traffic}` 100% | Each request's expected status (200, 201) |
+| No 5xx | `server_errors` 0 | |
+| No GraphQL error | `graphql_errors` 0 | Errors in a response, even a 200, by code |
+| No lost event | `lost_workouts` 0 | Every workout recorded in the run (its recording id starts with the run's id) is, within `RECONCILE_TIMEOUT_S` (120), in its member's training log in Training Progress |
+| No duplicated event | `duplicated_workouts` 0 | No recording made two workouts, and no workout is logged twice |
+| No dead letter | `dead_letters` 0 | Both outboxes' dead letters that failed since the start (the admin routes), and RabbitMQ's DLQ, against its count at the start |
+| Nothing stuck | `messages_left` 0 | Training Progress' queue and both outboxes empty, within `DRAIN_TIMEOUT_S` (30) |
+| No exception | `error_traces` 0 | Tempo: `{ resource.service.name =~ "workout-tracking\|training-progress" && status = error }` since the start. A failed handler, query or publish, a 5xx, an error log: each marks its span |
+| No error log | `error_logs` 0 | Loki: `{service_name=~"workout-tracking\|training-progress"} \| detected_level=~"(?i)error\|fatal"` since the start |
+| Quiet alerts | `alerts_fired` 0 | Grafana's alert history since the start (`/api/annotations?type=alert`), 75 s (`ALERT_WAIT_S`) after the traffic, so that an evaluation sees its end. Not counted: the two request-rate rules (over 20 a minute), which a load test fires on purpose, and rules only pending, listed instead |
+| The verdict ran | `checks_unavailable` 0 | A check that couldn't run (Grafana down, no admin token) fails the run instead of passing it |
+
+Measured on a laptop, one instance each, from the build: `stress` (30 to 100 actions a second, 3 minutes at the peak) p95 5.3 ms, 1,767 recordings reconciled; `spike` (20 to 200) p95 5.7 ms, 1,063 recordings reconciled; both with a clean verdict. Some runs list *RabbitMQ queue not empty for 5 minutes* as pending: the rule reads one scrape a minute, and under steady recordings a message can be in flight at that moment. It would fire if that happened 5 minutes in a row, although the queue drains; with the acknowledgements' rate, as *messages not consumed* has, it wouldn't.
+
+**Versions.** `service_version` on every metric (section 15.1) compares the old and the new version while both serve, during a rolling deploy: the dashboard's **version** variable, and requests, 5xx and p95 by version. The same criteria then apply to a deploy under load.
+
+### 17.4 Messages left in RabbitMQ, moved to a new version of the queue
+
+RabbitMQ refuses to declare a queue again with other arguments (`PRECONDITION_FAILED`), so changing one of Training Progress' queue (`x-delivery-limit`, the dead-letter strategy, or partitioning by member instead of a single active consumer) means a new queue, `training-progress.workout-tracking.v2`, and moving what waits in the old one, without losing or applying twice any event.
+
+1. **A backlog.** Stop Training Progress, then `load-tests/k6.sh backlog` (it refuses to run while the queue has a consumer): 200 recordings (`RECORDINGS`), whose events wait in `training-progress.workout-tracking`. It checks that they all reached the queue and prints the command for step 6, with the run's id and start.
+2. **The new queue.** Declare `...v2` with its arguments and bind it to `workout-tracking.integration` with `workout-tracking.integration.#`: in `infrastructure/rabbitmq/definitions.json` and `WorkoutTrackingSubscription`, as section 7.2 requires. From then on, new events go to both queues.
+3. **The consumer.** Start Training Progress consuming `...v2`.
+4. **The move.** Unbind the old queue, so nothing new arrives in it, then move its messages to `...v2`: in the management UI (http://localhost:15672, `fitness`/`fitness`), *Queues* > the old queue > *Move messages* (the shovel plugin, enabled in Compose), or with a shovel that deletes itself once the queue is empty:
+
+   ```bash
+   docker compose exec rabbitmq rabbitmqctl set_parameter shovel move-to-v2 \
+     '{"src-uri": "amqp://", "src-queue": "training-progress.workout-tracking", "dest-uri": "amqp://", "dest-queue": "training-progress.workout-tracking.v2", "src-delete-after": "queue-length"}'
+   ```
+
+5. **Clean up.** Delete the empty old queue, and remove it from the definitions.
+6. **The verdict.** `load-tests/k6.sh reconcile -e RUN_ID=... -e SINCE=... -e DLQ_BEFORE=...`: every workout of the backlog is in the training logs exactly once, nothing was dead-lettered or is left, no trace failed and no error was logged since the backlog started, and no alert still fires (`alertsWhen: after`: *RabbitMQ queue with 5 or more messages* and *messages not consumed* fire during the backlog, which is what they're for).
+
+Between steps 2 and 4, events published after `...v2` was bound are in both queues, so the move delivers them twice: Training Progress' inbox (`processInTransaction`, by the CloudEvent's id) applies each once, which `duplicated_workouts` proves. The moved events are older than some already consumed from `...v2`, so they arrive out of order, which the anticorruption layer already takes (section 7.3): every event carries the whole workout, and the source revision guard ignores an older one, so a workout's recording arriving after its correction changes nothing.
+
+### 17.5 Next steps (not built)
+
+- **Several instances** behind a local load balancer (nginx or Traefik in Compose), and `service.instance.id`: today two instances of one version share their metrics' series. The tests then target the balancer (`WORKOUT_TRACKING_URL`, `TRAINING_PROGRESS_URL`), and a rolling deploy can run under `stress`.
+- **The p95 by route in the verdict**, from the summary's tagged requests: today the summary has it per interface, Grafana per route.

@@ -7,6 +7,7 @@ import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { CqrsModule } from '@nestjs/cqrs';
 import { DrizzleModule, getDrizzleToken } from '@nestjs/drizzle';
 import { GraphQLModule } from '@nestjs/graphql';
+import { LocksModule } from '@nestjs/locks';
 import { OutboxModule, OutboxStorage } from '@nestjs/outbox';
 import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
 import { ResilienceModule } from '@nestjs/resilience';
@@ -14,6 +15,7 @@ import { minutes, ThrottlerModule } from '@nestjs/throttler';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { CacheInvalidationHandler } from './cache/cache-invalidation.handler.js';
 import { ReadCache } from './cache/read-cache.js';
+import { RedisLockStore } from './cache/redis-lock-store.js';
 import { redisStore } from './cache/redis-store.js';
 import { type Environment, validateEnvironment } from './config/environment.js';
 import type { Database } from './database/database.js';
@@ -33,9 +35,9 @@ import { TelegramModule } from './telegram/telegram.module.js';
 
 /**
  * Technical plumbing of the service: configuration, the database, the outbox (domain events to
- * the policies, the published language to Notifications, all in-process), Redis, GraphQL,
- * scheduling, RabbitMQ topology, the rate limit and timeouts, validation, error mapping, health
- * checks, the Telegram bot. No domain concepts.
+ * the policies, the published language to Notifications, all in-process), Redis (the read cache
+ * and its locks), GraphQL, scheduling, RabbitMQ topology, the rate limit and timeouts, validation,
+ * error mapping, health checks, the Telegram bot. No domain concepts.
  */
 @Global()
 @Module({
@@ -56,7 +58,7 @@ import { TelegramModule } from './telegram/telegram.module.js';
         connection: {
           connectionString: config.get('DATABASE_URL', { infer: true }),
           min: 2,
-          max: 25,
+          max: 30,
           connectionTimeoutMillis: 5_000,
           statement_timeout: 15_000,
           application_name: 'training-progress',
@@ -76,6 +78,8 @@ import { TelegramModule } from './telegram/telegram.module.js';
       // Redis only: an in-memory tier couldn't be invalidated from another instance.
       useFactory: (config: ConfigService<Environment, true>) => ({ stores: [redisStore(config.get('REDIS_URL', { infer: true }))] }),
     }),
+    // Locks every instance shares, in Redis (RedisLockStore): the read cache's load lock (section 8.1).
+    LocksModule.forRoot(),
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       // Code first: the schema is generated from the resolvers and types, in memory.
@@ -123,6 +127,7 @@ import { TelegramModule } from './telegram/telegram.module.js';
     { provide: DomainEventPublisher, useClass: OutboxDomainEventPublisher },
     Transactions,
     ReadCache,
+    RedisLockStore,
     CacheInvalidationHandler,
     DeadLetterTopology,
     // Picked up by Apollo (@Plugin()): GraphQL's per-operation metric.
