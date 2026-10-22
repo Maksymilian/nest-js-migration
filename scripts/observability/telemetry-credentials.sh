@@ -18,7 +18,7 @@ chmod 644 "$HTPASSWD"
 echo "Wrote $HTPASSWD for user $USERNAME"
 
 # OTEL_EXPORTER_OTLP_HEADERS is a list of key=value with URL-encoded values: "Basic <base64>".
-TOKEN="$(printf '%s:%s' "$USERNAME" "$PASSWORD" | base64 -w0 | sed 's/=/%3D/g')"
+TOKEN="$(printf '%s:%s' "$USERNAME" "$PASSWORD" | base64 | tr -d '\n' | sed 's/=/%3D/g')"
 LINE="OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20$TOKEN"
 for service in workout-tracking training-progress; do
   env_file="$ROOT_DIR/apps/$service/.env"

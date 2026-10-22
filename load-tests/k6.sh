@@ -43,7 +43,7 @@ TRAINING_PROGRESS_ADMIN_TOKEN="$(env_value apps/training-progress/.env ADMIN_TOK
 GRAFANA_PASSWORD="$(env_value .env GRAFANA_ADMIN_PASSWORD)"
 GRAFANA_AUTH="admin:${GRAFANA_PASSWORD:-admin}" # Compose's own default when .env doesn't set it
 # amqp://user:password@host:port: the management API takes the same user.
-RABBITMQ_AUTH="$(env_value apps/workout-tracking/.env RABBITMQ_URL | sed -E 's#^amqps?://([^@/]+)@.*#\1#')"
+RABBITMQ_AUTH="$(env_value apps/workout-tracking/.env RABBITMQ_URL | sed -nE 's#^amqps?://([^@/]+)@.*#\1#p')"
 [[ "$RABBITMQ_AUTH" == *:* ]] || RABBITMQ_AUTH="fitness:fitness"
 
 # The cache mode Training Progress was started with: the shell's, as for the service, else its .env's.

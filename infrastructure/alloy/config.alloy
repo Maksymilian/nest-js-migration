@@ -68,20 +68,23 @@ otelcol.exporter.prometheus "services" {
 }
 
 // --- RabbitMQ: its built-in Prometheus plugin. Per queue (messages, ready, unacknowledged, consumers,
-// deliveries and acknowledgements), and the node's aggregated metrics.
+// deliveries and acknowledgements), and the node's aggregated metrics. Every scrape runs at Prometheus'
+// scrape_interval (15s), not Alloy's default 60s: the alert rules' [1m] windows need several samples.
 
 prometheus.scrape "rabbitmq_queues" {
-  job_name     = "rabbitmq"
-  targets      = [{"__address__" = "rabbitmq:15692"}]
-  metrics_path = "/metrics/detailed"
-  params       = {"family" = ["queue_coarse_metrics", "queue_consumer_count", "queue_delivery_metrics"]}
-  forward_to   = [prometheus.remote_write.prometheus.receiver]
+  job_name        = "rabbitmq"
+  targets         = [{"__address__" = "rabbitmq:15692"}]
+  metrics_path    = "/metrics/detailed"
+  params          = {"family" = ["queue_coarse_metrics", "queue_consumer_count", "queue_delivery_metrics"]}
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
 }
 
 prometheus.scrape "rabbitmq_node" {
-  job_name   = "rabbitmq"
-  targets    = [{"__address__" = "rabbitmq:15692"}]
-  forward_to = [prometheus.remote_write.prometheus.receiver]
+  job_name        = "rabbitmq-node"
+  targets         = [{"__address__" = "rabbitmq:15692"}]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
 }
 
 // --- Redis: read straight from the server (INFO), by Alloy's embedded exporter.
@@ -91,9 +94,10 @@ prometheus.exporter.redis "redis" {
 }
 
 prometheus.scrape "redis" {
-  job_name   = "redis"
-  targets    = prometheus.exporter.redis.redis.targets
-  forward_to = [prometheus.remote_write.prometheus.receiver]
+  job_name        = "redis"
+  targets         = prometheus.exporter.redis.redis.targets
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
 }
 
 // --- k6's metrics, from the load tests (docs/architecture.md, section 17): Prometheus remote write

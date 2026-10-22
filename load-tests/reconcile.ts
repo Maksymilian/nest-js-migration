@@ -17,7 +17,11 @@ export default function () {
   if (!runId || !since) {
     exec.test.abort('RUN_ID and SINCE are required: backlog.ts prints them');
   }
+  const sinceDate = new Date(since);
+  if (Number.isNaN(sinceDate.getTime())) {
+    exec.test.abort(`SINCE is not a date: ${since}`);
+  }
   // Without DLQ_BEFORE, every message in the DLQ counts.
-  const start = snapshot(new Date(since), Number(deadLetterQueue ?? 0));
+  const start = snapshot(sinceDate, Number(deadLetterQueue ?? 0));
   judge(start, { members: writers(), runId, alertsWhen: 'after' });
 }

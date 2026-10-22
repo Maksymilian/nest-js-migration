@@ -132,7 +132,8 @@ function json<T>(response: RefinedResponse<'text'>, what: string): T {
   return body<T>(response);
 }
 
-function queue(name: string): Queue {
+/** A queue on RabbitMQ's default vhost, from its management API: throws unless it answers 200. */
+export function queue(name: string): Queue {
   return json(get(`${RABBITMQ_URL}/api/queues/%2F/${encodeURIComponent(name)}`, basic(RABBITMQ_AUTH)), `RabbitMQ's management API (${name})`);
 }
 
