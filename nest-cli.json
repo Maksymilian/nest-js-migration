@@ -19,6 +19,15 @@
         "tsConfigPath": "libs/ddd/tsconfig.lib.json"
       }
     },
+    "telemetry": {
+      "type": "library",
+      "root": "libs/telemetry",
+      "entryFile": "index",
+      "sourceRoot": "libs/telemetry/src",
+      "compilerOptions": {
+        "tsConfigPath": "libs/telemetry/tsconfig.lib.json"
+      }
+    },
     "training-progress": {
       "type": "application",
       "root": "apps/training-progress",

@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "declaration": true,
-    "rootDir": "../..",
+    // Only this library's own sources: importing an app or another library is error TS6059.
+    "rootDir": "./src",
     "outDir": "../../dist/libs/ddd"
   },
   "include": ["src/**/*"],

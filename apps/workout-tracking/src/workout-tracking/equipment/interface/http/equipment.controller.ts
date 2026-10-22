@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
+import { Timeout } from '@nestjs/resilience';
 import { PairEquipmentCommand } from '../../application/commands/pair-equipment.command.js';
 import { RegisterEquipmentCommand } from '../../application/commands/register-equipment.command.js';
 import { UnpairEquipmentCommand } from '../../application/commands/unpair-equipment.command.js';
@@ -24,6 +25,7 @@ export class EquipmentController {
   }
 
   @Get(':equipmentId')
+  @Timeout()
   get(@Param('equipmentId', ParseUUIDPipe) equipmentId: string) {
     return this.queryBus.execute(new GetEquipmentQuery(EquipmentId.from(equipmentId)));
   }

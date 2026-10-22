@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
+import { Timeout } from '@nestjs/resilience';
 import { CorrectWorkoutCommand } from '../../application/commands/correct-workout.command.js';
 import { VoidWorkoutCommand } from '../../application/commands/void-workout.command.js';
 import { GetWorkoutQuery } from '../../application/queries/get-workout.query.js';
@@ -18,6 +19,7 @@ export class WorkoutsController {
   ) {}
 
   @Get(':workoutId')
+  @Timeout()
   get(@Param('workoutId', ParseUUIDPipe) workoutId: string) {
     return this.queryBus.execute(new GetWorkoutQuery(WorkoutId.from(workoutId)));
   }

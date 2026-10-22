@@ -29,6 +29,12 @@
       "@app/ddd/*": [
         "./libs/ddd/src/*"
       ],
+      "@app/telemetry": [
+        "./libs/telemetry/src/index.ts"
+      ],
+      "@app/telemetry/*": [
+        "./libs/telemetry/src/*"
+      ],
       "@app/workout-tracking-contracts": [
         "./libs/workout-tracking-contracts/src/index.ts"
       ],

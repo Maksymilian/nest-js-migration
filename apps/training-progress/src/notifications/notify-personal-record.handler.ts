@@ -1,6 +1,7 @@
+import { OnTracedOutboxMessage } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
 import { MailError, Mailer } from '@nestjs/mail';
-import { NonRetryableMessageError, OnOutboxMessage, type OutboxHandlerContext } from '@nestjs/outbox';
+import { NonRetryableMessageError, type OutboxHandlerContext } from '@nestjs/outbox';
 import { type PersonalRecordSetV1, TrainingProgressTopics } from '../training-progress/published-language/topics.js';
 import { MemberContactDirectory } from './member-contact-directory.js';
 import { PersonalRecordMail } from './personal-record.mail.js';
@@ -14,7 +15,7 @@ export class NotifyPersonalRecordHandler {
   ) {}
 
   // The inbox skips messages this consumer already handled.
-  @OnOutboxMessage(TrainingProgressTopics.personalRecordSetV1, { consumer: 'notifications.personal-record' })
+  @OnTracedOutboxMessage(TrainingProgressTopics.personalRecordSetV1, { consumer: 'notifications.personal-record' })
   async notify(record: PersonalRecordSetV1, { message, signal }: OutboxHandlerContext) {
     const contact = await this.contacts.contactOf(record.memberId);
     try {

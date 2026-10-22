@@ -20,10 +20,14 @@ process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off'; // no poll loop: the tests drive the relay
 process.env.MAIL_TRANSPORT = 'file';
 process.env.TELEGRAM_BOT_TOKEN = ''; // the bot is off, whatever .env says: telegram.e2e-spec.ts covers it
+process.env.RATE_LIMIT_PER_MINUTE = '10000'; // whatever .env says: resilience.e2e-spec.ts covers it
+process.env.QUERY_TIMEOUT_MS = '10000';
+process.env.CORS_ORIGINS = 'https://app.fitness.example,http://localhost:5173';
 
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
+const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 const { CloudEventDeserializer } = await import('../src/platform/messaging/cloud-event.deserializer.js');
 const { WorkoutTrackingEventsController } = await import('../src/training-progress/workout-tracking-acl/workout-tracking-events.controller.js');
 const { MissEndedGoalsCommand } = await import('../src/training-progress/training-goals/application/commands/miss-ended-goals.command.js');
@@ -52,6 +56,9 @@ describe('Training Progress (e2e)', () => {
       .overrideProvider(CACHE_MANAGER)
       .useValue(cache)
       .overrideProvider(DeadLetterTopology)
+      .useValue({})
+      // No Redis: the locks are in memory, for this one instance.
+      .overrideProvider(RedisLockStore)
       .useValue({})
       .compile();
     app = configureHttp(moduleRef.createNestApplication());
@@ -246,6 +253,22 @@ describe('Training Progress (e2e)', () => {
       mailbox.assertSent({ to: member, mail: GoalAchievedMail });
     });
 
+    it('lists only the goals set at or after setSince', async () => {
+      const member = 'set-since@example.com';
+      const GOALS_SET_SINCE = `query ($id: ID!, $setSince: DateTime) { member(id: $id) { trainingGoals(setSince: $setSince) { id } } }`;
+      const set = await graphql<{ setTrainingGoal: { id: string } }>(SET_GOAL, {
+        input: { memberId: member, metric: 'WORKOUT_COUNT', target: 5, startsOn: '2026-10-01T00:00:00Z', endsOn: '2027-01-01T00:00:00Z' },
+      });
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const inAnHour = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+      const sinceWeekAgo = await graphql<{ member: { trainingGoals: { id: string }[] } }>(GOALS_SET_SINCE, { id: member, setSince: weekAgo });
+      expect(sinceWeekAgo.data.member.trainingGoals).toEqual([{ id: set.data.setTrainingGoal.id }]);
+
+      const sinceInAnHour = await graphql<{ member: { trainingGoals: { id: string }[] } }>(GOALS_SET_SINCE, { id: member, setSince: inAnHour });
+      expect(sinceInAnHour.data.member.trainingGoals).toEqual([]);
+    });
+
     it('refuses an invalid goal with INVARIANT_VIOLATION and malformed input with BAD_REQUEST', async () => {
       const invalid = await graphql(SET_GOAL, {
         input: { memberId: 'goals@example.com', metric: 'DISTANCE', target: 0, startsOn: '2026-10-01T00:00:00Z', endsOn: '2026-11-01T00:00:00Z' },
@@ -353,6 +376,44 @@ describe('Training Progress (e2e)', () => {
       const { errors } = await graphql(`query { member(id: "not-an-email") { id } }`);
 
       expect(errors?.[0].extensions.code).toBe('BAD_REQUEST');
+    });
+  });
+
+  describe('HTTP', () => {
+    const api = () => request(app.getHttpServer());
+    const STREAK = { query: '{ member(id: "ada@example.com") { streak } }' };
+
+    it('sends the security headers on every response, and lets GraphiQL load outside production', async () => {
+      const { headers } = await api().post('/graphql').send(STREAK).expect(200);
+
+      expect(headers).toMatchObject({ 'x-content-type-options': 'nosniff', 'x-frame-options': 'SAMEORIGIN' });
+      expect(headers['content-security-policy']).toContain("script-src 'self' 'unsafe-inline' https://unpkg.com");
+      expect(headers['x-powered-by']).toBeUndefined();
+    });
+
+    it('lets the web apps in CORS_ORIGINS call GraphQL from a browser, and read Retry-After', async () => {
+      const preflight = await api()
+        .options('/graphql')
+        .set('Origin', 'http://localhost:5173')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type,baggage')
+        .expect(204);
+      expect(preflight.headers).toMatchObject({
+        'access-control-allow-origin': 'http://localhost:5173',
+        'access-control-allow-methods': 'GET,POST',
+        'access-control-allow-headers': 'content-type,baggage',
+        'access-control-max-age': '600',
+      });
+
+      const { headers } = await api().post('/graphql').set('Origin', 'https://app.fitness.example').send(STREAK).expect(200);
+      expect(headers['access-control-allow-origin']).toBe('https://app.fitness.example');
+      expect(headers['access-control-expose-headers']).toContain('Retry-After');
+    });
+
+    it('gives other origins no CORS headers, so that browsers block them', async () => {
+      const { headers } = await api().post('/graphql').set('Origin', 'https://elsewhere.example').send(STREAK).expect(200);
+
+      expect(headers['access-control-allow-origin']).toBeUndefined();
     });
   });
 });

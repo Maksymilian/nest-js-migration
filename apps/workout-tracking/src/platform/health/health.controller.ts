@@ -1,8 +1,11 @@
 import { Controller, Get, VERSION_NEUTRAL } from '@nestjs/common';
 import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
+import { SkipThrottle } from '@nestjs/throttler';
 import { PostgresHealthIndicator } from './postgres.health.js';
 import { RabbitMqHealthIndicator } from './rabbitmq.health.js';
 
+/** Kubernetes' probes aren't callers: no rate limit, or a burst of requests would take the instance out. */
+@SkipThrottle()
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(

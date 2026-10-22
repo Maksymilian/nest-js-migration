@@ -1,4 +1,5 @@
 import type { DomainEvent, Transaction } from '@app/ddd';
+import { traceHeaders } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
 import { type NewOutboxMessage, Outbox } from '@nestjs/outbox';
 import { v5 as uuidv5 } from 'uuid';
@@ -27,6 +28,8 @@ export class OutboxDomainEventPublisher extends DomainEventPublisher {
         topic: route.topic,
         key: route.key(event),
         payload: route.payload(event),
+        // The trace and flow of the change: the relay delivers the message outside it.
+        headers: traceHeaders(),
       })),
     );
     if (messages.length > 0) {

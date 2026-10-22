@@ -1,6 +1,7 @@
+import { OnTracedOutboxMessage } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
 import { MailError, Mailer } from '@nestjs/mail';
-import { NonRetryableMessageError, OnOutboxMessage, type OutboxHandlerContext } from '@nestjs/outbox';
+import { NonRetryableMessageError, type OutboxHandlerContext } from '@nestjs/outbox';
 import { type GoalAchievedV1, TrainingProgressTopics } from '../training-progress/published-language/topics.js';
 import { MemberContactDirectory } from './member-contact-directory.js';
 import { GoalAchievedMail } from './goal-achieved.mail.js';
@@ -14,7 +15,7 @@ export class NotifyGoalAchievedHandler {
   ) {}
 
   // The inbox skips messages this consumer already handled.
-  @OnOutboxMessage(TrainingProgressTopics.goalAchievedV1, { consumer: 'notifications.goal-achieved' })
+  @OnTracedOutboxMessage(TrainingProgressTopics.goalAchievedV1, { consumer: 'notifications.goal-achieved' })
   async notify(goal: GoalAchievedV1, { message, signal }: OutboxHandlerContext) {
     const contact = await this.contacts.contactOf(goal.memberId);
     try {

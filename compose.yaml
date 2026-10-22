@@ -1,6 +1,9 @@
 # Infrastructure only (docs/architecture.md, section 14): the two services run on the host
-# with `pnpm start:dev <app>`. `docker compose up -d --wait` starts the databases, Redis and
+# with `pnpm start:dev:<app>`. `docker compose up -d --wait` starts the databases, Redis and
 # RabbitMQ. Liquibase isn't part of it: scripts/database/liquibase.sh migrates the databases.
+# `--profile observability` adds Grafana Alloy, Loki, Tempo, Prometheus and Grafana (section 15),
+# `--profile faults` adds Toxiproxy (section 16), and `--profile load-tests` k6, which
+# load-tests/k6.sh runs (section 17).
 name: fitness-platform
 
 services:
@@ -52,7 +55,8 @@ services:
   # Integration events between the services (section 7). Management UI on http://localhost:15672
   rabbitmq:
     image: rabbitmq:4-management-alpine
-    # The user (fitness/fitness) and the topology of section 7.2 come from the definitions file.
+    # The user (fitness/fitness) and the topology of section 7.2 come from the definitions file. The
+    # image's plugins, and the shovel's: moving a queue's messages to another queue (section 17.4).
     ports:
       - '5672:5672'
       - '15672:15672'
@@ -60,13 +64,138 @@ services:
       - rabbitmq:/var/lib/rabbitmq
       - ./infrastructure/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-definitions.conf:ro
       - ./infrastructure/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infrastructure/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 5s
       timeout: 10s
       retries: 30
 
+  # Toxiproxy (section 16): faults between a service and its PostgreSQL, Redis or RabbitMQ, for local
+  # tests. One proxy per connection (infrastructure/toxiproxy/proxies.json); a service goes through
+  # them when started with scripts/faults/start-through-toxiproxy.sh, and scripts/faults/fault.sh
+  # injects and clears the faults through the API on http://localhost:8474.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0
+    profiles: [faults]
+    command: ['-host=0.0.0.0', '-config=/etc/toxiproxy/proxies.json']
+    ports:
+      - '127.0.0.1:8474:8474'
+      - '127.0.0.1:25433:25433' # workout-tracking-db
+      - '127.0.0.1:25672:25672' # workout-tracking-rabbitmq
+      - '127.0.0.1:25434:25434' # training-progress-db
+      - '127.0.0.1:26379:26379' # training-progress-redis
+      - '127.0.0.1:25673:25673' # training-progress-rabbitmq
+    volumes:
+      - ./infrastructure/toxiproxy/proxies.json:/etc/toxiproxy/proxies.json:ro
+    healthcheck:
+      test: ['CMD', '/toxiproxy-cli', 'list']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on: [workout-tracking-db, training-progress-db, redis, rabbitmq]
+
+  # Grafana Alloy (section 15): the services' OpenTelemetry (OTLP/HTTP on 4318, only with Basic Auth:
+  # infrastructure/alloy/htpasswd, from scripts/observability/telemetry-credentials.sh), RabbitMQ's
+  # and Redis' metrics (scraped), and their containers' logs. UI on http://localhost:12345
+  alloy:
+    image: grafana/alloy:v1.20.1
+    profiles: [observability]
+    command: ['run', '--server.http.listen-addr=0.0.0.0:12345', '--storage.path=/var/lib/alloy/data', '/etc/alloy/config.alloy']
+    ports:
+      - '127.0.0.1:4318:4318'
+      - '127.0.0.1:12345:12345'
+    volumes:
+      - ./infrastructure/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # No file, no Alloy: Compose stops instead of creating a directory in its place.
+      - type: bind
+        source: ./infrastructure/alloy/htpasswd
+        target: /etc/alloy/htpasswd
+        read_only: true
+        bind:
+          create_host_path: false
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy:/var/lib/alloy/data
+    depends_on: [loki, tempo, prometheus]
+
+  # Logs (section 15), from Alloy over OTLP and the Docker API. Single binary, local storage: the
+  # image's own configuration.
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: [observability]
+    volumes:
+      - loki:/loki
+
+  # Traces (section 15), from Alloy over OTLP; span metrics and the service graph go to Prometheus.
+  tempo:
+    image: grafana/tempo:3.1.0
+    profiles: [observability]
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./infrastructure/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo:/var/tempo
+
+  # Metrics (section 15): written by Alloy and Tempo (remote write); Grafana reads them.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus:/prometheus
+
+  # Dashboards and alerting (section 15) on http://localhost:3000, as admin with GRAFANA_ADMIN_PASSWORD
+  # (.env). Data sources, dashboards and alert rules are provisioned from infrastructure/grafana/.
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [observability]
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    depends_on: [loki, tempo, prometheus]
+
+  # k6 (section 17): the load tests, run by load-tests/k6.sh (`docker compose run`), never started with
+  # `up`. On the Compose network, so its metrics reach Alloy (Prometheus remote write, for the k6
+  # Prometheus dashboard) and its verdict Grafana and RabbitMQ's management API; the services run on
+  # the host, through host.docker.internal.
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load-tests]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      WORKOUT_TRACKING_URL: http://host.docker.internal:3001
+      TRAINING_PROGRESS_URL: http://host.docker.internal:3002
+      GRAFANA_URL: http://grafana:3000
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      K6_PROMETHEUS_RW_SERVER_URL: http://alloy:9091/api/v1/metrics/write
+      # The statistics the dashboard reads: k6_http_req_duration_p95, _p99, _min, _max, _avg, _med.
+      K6_PROMETHEUS_RW_TREND_STATS: p(95),p(99),min,max,avg,med
+      K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+      # The series end with the test, instead of lingering for Prometheus' 5 minutes.
+      K6_PROMETHEUS_RW_STALE_MARKERS: 'true'
+    volumes:
+      - ./load-tests:/load-tests:ro
+      - ./var/load-tests:/results
+
 volumes:
   workout-tracking-db:
   training-progress-db:
   rabbitmq:
+  alloy:
+  loki:
+  tempo:
+  prometheus:
+  grafana:

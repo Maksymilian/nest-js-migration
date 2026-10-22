@@ -1,5 +1,6 @@
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { Args, Int, Mutation, Parent, ResolveField, Resolver } from '@nestjs/graphql';
+import { Timeout } from '@nestjs/resilience';
 import { MemberId } from '../../../members/domain/values/member-id.js';
 import { Discipline } from '../../../training-log/domain/values/discipline.js';
 import { AbandonTrainingGoalCommand } from '../../application/commands/abandon-training-goal.command.js';
@@ -38,8 +39,13 @@ export class TrainingGoalsResolver {
     return this.commandBus.execute(new AbandonTrainingGoalCommand(MemberId.from(input.memberId), TrainingGoalId.from(input.trainingGoalId)));
   }
 
-  /** Calculated per goal from the training log; a member has few goals. Add a DataLoader if lists grow. */
+  /**
+   * Calculated per goal from the training log; a member has few goals. Add a DataLoader if lists
+   * grow. Fails with TIMEOUT after QUERY_TIMEOUT_MS (section 16); the mutations have no timeout, as
+   * one that timed out could still commit.
+   */
   @ResolveField(() => Int, { description: 'The sum of the goal metric over the workouts that count towards the goal.' })
+  @Timeout()
   progress(@Parent() goal: TrainingGoalType) {
     return this.queryBus.execute(new TrainingGoalProgressQuery(goal));
   }

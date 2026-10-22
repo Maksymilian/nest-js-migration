@@ -69,6 +69,8 @@ web_modules/
 .env
 .env.*
 !.env.example
+# Grafana Alloy's Basic Auth (scripts/observability/telemetry-credentials.sh)
+infrastructure/alloy/htpasswd
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

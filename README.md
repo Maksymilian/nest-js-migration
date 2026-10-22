@@ -28,15 +28,17 @@ Liquibase (`apps/<service>/liquibase`, run in Docker by `scripts/database/liquib
 | RabbitMQ management | 15672 | `fitness` / `fitness` |
 
 ```bash
-# development, with watch mode (one terminal each)
-pnpm start:dev workout-tracking
-pnpm start:dev training-progress
+# development, with watch mode and OpenTelemetry (one terminal each)
+pnpm start:dev:workout-tracking
+pnpm start:dev:training-progress
 
 # production build
 pnpm build
 pnpm start:prod:workout-tracking
 pnpm start:prod:training-progress
 ```
+
+Both services send security headers on every response. To call GraphQL from a web app in a browser, list its origin in Training Progress' `CORS_ORIGINS` (for example `http://localhost:5173`); without it, browsers on other origins are blocked (section 6.4 of `docs/architecture.md`).
 
 Until Identity exists, a member is identified by their email address (not verified). Notifications are written as `.eml` files to `var/mail` (`MAIL_TRANSPORT=file`); set `MAIL_TRANSPORT=smtp` with `SMTP_URL`, or `resend` with `RESEND_API_KEY`, to send them.
 
@@ -89,6 +91,7 @@ pnpm test                 # unit tests: aggregates (given/when/then), value obje
 pnpm test:e2e             # each service on in-process PostgreSQL (PGlite) with its Liquibase changesets
 pnpm lint                 # oxlint and the architecture check
 pnpm check:architecture   # context, aggregate and layer boundaries (dependency-cruiser)
+LOCK_STORE_REDIS_URL=redis://localhost:6379 pnpm test   # also the lock store's contract, on Compose's Redis (as in CI)
 ```
 
 `pnpm build` runs the architecture check before compiling.
@@ -100,7 +103,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
 - Health: `GET /health/live` and `GET /health/ready` on both services. Readiness is `down` without the service's PostgreSQL, and `degraded` (still 200) without RabbitMQ or Redis.
 - Outbox: `GET /internal/v1/admin/outbox/stats` and `/dead-letters` on Workout Tracking, `/internal/admin/outbox/...` on Training Progress, with the `x-admin-token` header (`ADMIN_TOKEN`). Dead letters can be requeued with `POST .../dead-letters/:id/requeue`.
 - RabbitMQ dead letters (messages that aren't structured-mode CloudEvents, invalid integration events, or ones that failed 5 deliveries): queue `training-progress.workout-tracking.dlq`. Integration events travel as [CloudEvents](https://cloudevents.io) 1.0 (section 5.4 of `docs/architecture.md`).
-- Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs in `infrastructure/kubernetes/` publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
+- Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
 
   ```bash
   node scripts/scheduler/publish-schedule-trigger.mjs miss-ended-goals
@@ -110,6 +113,53 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
   ```
 
   Triggers that failed 5 deliveries are in `training-progress.schedule.dlq`.
+
+### Observability: OpenTelemetry and the Grafana stack
+
+The services send traces, metrics and logs over OTLP to Grafana Alloy, which requires Basic Auth and sends them to Tempo, Prometheus and Loki; Alloy also scrapes RabbitMQ and Redis and collects their logs. Grafana shows them, with the **Fitness platform** dashboard and the alert rules (section 15 of `docs/architecture.md`).
+
+```bash
+cp .env.example .env                                    # GRAFANA_ADMIN_PASSWORD
+scripts/observability/telemetry-credentials.sh          # Alloy's htpasswd, and the Authorization header in apps/*/.env
+docker compose --profile observability up -d            # + Alloy (localhost:4318), Tempo, Loki, Prometheus and Grafana
+pnpm start:dev:workout-tracking                         # the start scripts load the OpenTelemetry SDK
+```
+
+Grafana: http://localhost:3000 (`admin`, `GRAFANA_ADMIN_PASSWORD`) > Dashboards > Fitness platform > Fitness platform; the alert rules are in Alerting. A flow, several roundtrips of one interaction, is `session.id`: send it with `baggage: session.id=<flow id>` and type it in the dashboard's **flow** box (in Explore: `{span.session.id="<flow id>"}` in Tempo, `| session_id="<flow id>"` in Loki). To see only GraphQL, only the Telegram bot, the REST API or RabbitMQ, pick it in the dashboard's **interface** list (in Explore: `{span.interface="telegram"}` in Tempo, `| interface="telegram"` in Loki). Alloy's UI, to see its pipelines: http://localhost:12345.
+
+`LOG_CONSOLE=off` in a service's `.env` keeps its logs off the console (production).
+
+### Rate limit, timeouts and faults
+
+With `RATE_LIMIT=on`, each service rejects a caller past `RATE_LIMIT_PER_MINUTE` requests a minute (429, with `TOO_MANY_REQUESTS` over GraphQL), and cuts a query after `QUERY_TIMEOUT_MS` (504, or `TIMEOUT`). Toxiproxy slows down or cuts a service's connections to PostgreSQL, Redis and RabbitMQ, to see them, and other failures, in Grafana (section 16 of `docs/architecture.md`, with the scenarios to try):
+
+```bash
+docker compose --profile faults --profile observability up -d --wait   # + Toxiproxy (API on localhost:8474)
+scripts/faults/start-through-toxiproxy.sh training-progress            # instead of pnpm start:dev:training-progress
+scripts/faults/fault.sh latency training-progress-db 4000             # then query: TIMEOUT after QUERY_TIMEOUT_MS
+scripts/faults/fault.sh list                                           # hang, down, up, clear: see the script
+scripts/faults/fault.sh clear
+```
+
+The dashboard's **Rate limit, timeouts and faults** row shows rejections, timeouts, failed responses and connections waiting, with each fault as an annotation.
+
+The rate limit is off by default: set `RATE_LIMIT=on` in the service's `.env` to run it locally. In AWS, an AWS WAF rate-based rule on the load balancer limits callers instead: one count for all instances (section 16.1 has the rule's settings).
+
+### Load tests (k6)
+
+k6 in Docker sends the members' apps' traffic, 90% reads, over REST and GraphQL, then checks the verdict: p95 under 100 ms (200 ms for a spike), no failed request, 5xx or GraphQL error, every recorded workout in the training log exactly once, no dead letter, nothing left in a queue or an outbox, no failed trace (Tempo), no error log (Loki), no alert fired (section 17 of `docs/architecture.md`):
+
+```bash
+docker compose --profile observability up -d --wait
+load-tests/seed.sh                          # 1,000 members with a year of workouts, in both databases
+pnpm build && pnpm start:prod:workout-tracking   # and training-progress, in another terminal
+load-tests/k6.sh smoke                      # then stress, spike, streak-stampede
+load-tests/k6.sh stress -e PEAK_RATE=150    # k6 options after the test's name
+```
+
+k6 runs as Compose's `k6` service (profile `load-tests`) and writes its metrics through Alloy to Prometheus: Grafana's **k6 Prometheus** dashboard (Grafana Labs' [19665](https://grafana.com/grafana/dashboards/19665-k6-prometheus/), provisioned, linked from **Fitness platform**) shows each run by its **Test ID**, which `k6.sh` prints.
+
+`streak-stampede` compares the read cache's modes (section 8.1): start Training Progress with `READ_CACHE=off`, with `READ_CACHE_LOCK=off` (a cache stampede), and with the defaults (the load lock), and compare p95 and the dashboard's *Loads from PostgreSQL*. `backlog` and `reconcile` move messages left in RabbitMQ to a new version of a queue and prove nothing was lost or applied twice (section 17.4). Each run is an annotation on the dashboard, and its reports go to `var/load-tests/<test id>/`: `dashboard.html` (k6's web dashboard), `metrics.json`, `summary.json` and `console.log`; `service_version` on the metrics compares two versions during a deploy.
 
 ### Database releases and rollbacks
 

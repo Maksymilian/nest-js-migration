@@ -1,5 +1,5 @@
+import { OnTracedOutboxMessage } from '@app/telemetry';
 import { Injectable } from '@nestjs/common';
-import { OnOutboxMessage } from '@nestjs/outbox';
 import { DomainTopics, type LoggedWorkoutPayloadV1, type PersonalRecordsPayloadV1 } from '../outbox/domain-topics.js';
 import { CacheKeys } from './cache-keys.js';
 import { ReadCache } from './read-cache.js';
@@ -13,7 +13,7 @@ import { ReadCache } from './read-cache.js';
 export class CacheInvalidationHandler {
   constructor(private readonly cache: ReadCache) {}
 
-  @OnOutboxMessage([DomainTopics.workoutLoggedV1, DomainTopics.loggedWorkoutRevisedV1, DomainTopics.loggedWorkoutStoppedCountingV1], {
+  @OnTracedOutboxMessage([DomainTopics.workoutLoggedV1, DomainTopics.loggedWorkoutRevisedV1, DomainTopics.loggedWorkoutStoppedCountingV1], {
     consumer: 'cache-invalidation',
     inbox: false,
   })
@@ -21,7 +21,7 @@ export class CacheInvalidationHandler {
     await this.cache.forget([...CacheKeys.progressSummariesAffectedBy(memberId, new Date(startedAt), discipline), CacheKeys.streak(memberId)]);
   }
 
-  @OnOutboxMessage([DomainTopics.personalRecordSetV1, DomainTopics.personalRecordWithdrawnV1], {
+  @OnTracedOutboxMessage([DomainTopics.personalRecordSetV1, DomainTopics.personalRecordWithdrawnV1], {
     consumer: 'cache-invalidation',
     inbox: false,
   })

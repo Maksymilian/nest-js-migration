@@ -30,6 +30,47 @@ export class Environment {
   @IsIn(['on', 'off'])
   OUTBOX_RELAY: 'on' | 'off' = 'on';
 
+  /** `off` reads the read models from PostgreSQL every time, without Redis (section 8.1): to compare, in load tests. */
+  @IsIn(['on', 'off'])
+  READ_CACHE: 'on' | 'off' = 'on';
+
+  /**
+   * `on`: on a miss, one caller per key loads the read model, under the key's load lock in Redis;
+   * the others wait for its value (section 8.1). `off` lets every caller that misses load it: a
+   * cache stampede, to compare.
+   */
+  @IsIn(['on', 'off'])
+  READ_CACHE_LOCK: 'on' | 'off' = 'on';
+
+  /**
+   * `on` to limit callers in the service (section 16.1): locally, or wherever nothing in front of
+   * the service limits them. Off by default: in AWS, a WAF rate-based rule limits them instead.
+   */
+  @IsIn(['on', 'off'])
+  RATE_LIMIT: 'on' | 'off' = 'off';
+
+  /** Requests one caller (an IP address) may send per minute; past it, 429 or TOO_MANY_REQUESTS (section 16). Counted per instance. */
+  @IsInt()
+  @Min(1)
+  RATE_LIMIT_PER_MINUTE: number = 600;
+
+  /** How long a GraphQL query field may take before it fails with TIMEOUT (section 16). Its work isn't stopped. */
+  @IsInt()
+  @Min(1)
+  QUERY_TIMEOUT_MS: number = 3000;
+
+  /** `off` where logs only go to OpenTelemetry (production): nothing on stdout or stderr. */
+  @IsIn(['on', 'off'])
+  LOG_CONSOLE: 'on' | 'off' = 'on';
+
+  /**
+   * The origins of the web apps that call GraphQL from a browser, comma-separated
+   * (`https://app.fitness.example,http://localhost:5173`). Unset or empty, no other origin may.
+   */
+  @IsOptional()
+  @Matches(/^(https?:\/\/[^\s,/]+(,https?:\/\/[^\s,/]+)*)?$/, { message: 'CORS_ORIGINS must be origins (scheme://host[:port]), comma-separated' })
+  CORS_ORIGINS?: string;
+
   /** Protects the dead-letter admin routes. Without it, they answer 403. */
   @IsOptional()
   @IsString()
