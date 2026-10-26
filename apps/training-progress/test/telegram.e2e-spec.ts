@@ -1,16 +1,15 @@
-import type { PGlite } from '@electric-sql/pglite';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { INestApplication } from '@nestjs/common';
 import { getDrizzleToken } from '@nestjs/drizzle';
 import { InMemoryMailTransport, MailTransport } from '@nestjs/mail';
 import { Test } from '@nestjs/testing';
 import { createCache } from 'cache-manager';
-import { drizzle } from 'drizzle-orm/pglite';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { Bot } from 'grammy';
 import type { Update } from 'grammy/types';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
-import { migratedDatabase } from './support/migrated-database.js';
+import { migratedDatabase, type MigratedDatabase } from './support/migrated-database.js';
 import { buttonPress, buttons, recordingBot, TELEGRAM_WEBHOOK_SECRET, texts, textMessage } from './support/telegram.js';
 
 process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
@@ -31,7 +30,7 @@ const { DeadLetterTopology } = await import('../src/platform/messaging/dead-lett
 const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
 
 describe('Telegram bot (e2e)', () => {
-  let client: PGlite;
+  let client: MigratedDatabase;
   let app: INestApplication<App>;
   const recording = recordingBot();
 
