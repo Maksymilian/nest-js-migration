@@ -87,11 +87,12 @@ Run the Workout Tracking collection first: its workouts are what Training Progre
 ## Tests and checks
 
 ```bash
-pnpm test                 # unit tests: aggregates (given/when/then), value objects, policies' building blocks
-pnpm test:e2e             # each service on in-process PostgreSQL (PGlite) with its Liquibase changesets
+pnpm test                 # unit tests: aggregates (given/when/then), value objects, policies' building blocks,
+                          # and the lock store's and RabbitMQ transport's contract suites, each on its own
+                          # container (Testcontainers)
+pnpm test:e2e             # each service on its own PostgreSQL in Docker (Testcontainers) with its Liquibase changesets
 pnpm lint                 # oxlint and the architecture check
 pnpm check:architecture   # context, aggregate and layer boundaries (dependency-cruiser)
-LOCK_STORE_REDIS_URL=redis://localhost:6379 pnpm test   # also the lock store's contract, on Compose's Redis (as in CI)
 ```
 
 `pnpm build` runs the architecture check before compiling.

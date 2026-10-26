@@ -358,7 +358,7 @@ Malformed input is a `400` from `ValidationPipe` on every route. Responses are r
 | `workout_corrections` | `workout_id`, `revision`, previous and new metrics, `reason`, `corrected_at` | primary key `(workout_id, revision)`. Audit trail |
 | `nest_outbox.*` | The outbox store's tables, created by Liquibase from `nest-outbox sql` (changeset 0002); the store runs with `migrate: false` | |
 
-**Migrations:** Liquibase, formatted SQL changelogs in `apps/workout-tracking/liquibase` (master `changelog.yaml`), run in Liquibase's Docker image by `scripts/database/liquibase.sh workout-tracking update` (the same folder has the tag and rollback scripts). Test records are changesets with `context:test-data`. The Drizzle schema in `platform/database/schema.ts` mirrors the changesets and is only used to build queries. The e2e tests apply the same changesets to PGlite: formatted SQL is plain SQL with comments.
+**Migrations:** Liquibase, formatted SQL changelogs in `apps/workout-tracking/liquibase` (master `changelog.yaml`), run in Liquibase's Docker image by `scripts/database/liquibase.sh workout-tracking update` (the same folder has the tag and rollback scripts). Test records are changesets with `context:test-data`. The Drizzle schema in `platform/database/schema.ts` mirrors the changesets and is only used to build queries. The e2e tests apply the same changesets to a real PostgreSQL in Docker (Testcontainers, the same image as compose.yaml): formatted SQL is plain SQL with comments.
 
 ### 5.4 Published language (`libs/workout-tracking-contracts`)
 
@@ -775,7 +775,7 @@ scripts/faults/                        Start a service through Toxiproxy; inject
 rspack.config.js                       Builds each service's instrumentation.js next to its main.js
 ```
 
-Each app also has `liquibase/` (its schema), `test/` (e2e on PGlite with the changesets) and `.env.example`.
+Each app also has `liquibase/` (its schema), `test/` (e2e on a Testcontainers PostgreSQL with the changesets) and `.env.example`.
 
 Layer rules (enforced by the architecture check, section 11.1):
 - `domain/` imports nothing from NestJS, Drizzle, `@nestjs/outbox` or other layers. Pure libraries for generic subdomains (`date-fns`, `@date-fns/utc`) and `libs/ddd` are allowed. Aggregates are unit-tested without Nest.
@@ -823,7 +823,7 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Telegram bot | [grammY](https://grammy.dev), with `@nestjs/webhooks` for the webhook ([`http/webhooks.md`](nestjs/http/webhooks.md)) | The Nest docs have no Telegram recipe. grammY routes bot commands and buttons and types the Bot API; `@nestjs/webhooks` verifies Telegram's secret token and deduplicates updates with the outbox's inbox |
 | Calendar (generic) | `date-fns` | ISO weeks and period boundaries without hand-written date arithmetic |
 | Cache | `@nestjs/cache-manager` with `@keyv/redis` | Official recipe |
-| Distributed locks | `@nestjs/locks` ([`reliability/locks.md`](nestjs/reliability/locks.md)) with the docs' Redis store (`RedisLockStore`, on `@redis/client`) | Official package: the read cache's load lock, one loader per key on any instance (section 8.1). Its contract suite runs against a real Redis in CI |
+| Distributed locks | `@nestjs/locks` ([`reliability/locks.md`](nestjs/reliability/locks.md)) with the docs' Redis store (`RedisLockStore`, on `@redis/client`) | Official package: the read cache's load lock, one loader per key on any instance (section 8.1). Its contract suite runs against a real Redis (Testcontainers) |
 | Health | `@nestjs/terminus` | Official recipe |
 | Security headers | `app.useSecurityHeaders()` ([`security/helmet.md`](nestjs/security/helmet.md)) | Built into Nest 12.1, with Helmet 8's defaults: no extra package (section 6.4) |
 | CORS | `app.enableCors()` ([`security/cors.md`](nestjs/security/cors.md)), Training Progress only, with `CORS_ORIGINS` | Official recipe: Express' `cors` middleware (section 6.4) |
@@ -836,7 +836,7 @@ What isn't restricted, on purpose: `application/` and `interface/` may import ot
 | Observability | OpenTelemetry SDK for Node.js (`@app/telemetry`); Grafana Alloy (OTLP with Basic Auth, RabbitMQ and Redis scraping), Tempo, Loki, Prometheus and Grafana | The OpenTelemetry standard: the services know no vendor, and the stack is open source and runs in Compose. `@nestjs/observe` ([`observability/`](nestjs/observability/overview.md)) is NestJS' own platform, with its own protocol and `x-request-id` propagation |
 | Scheduled work | Kubernetes CronJobs publishing schedule triggers (`scripts/scheduler/`), no `@nestjs/schedule` | The services run as several instances: Kubernetes decides when, and RabbitMQ gives each trigger to one instance. Only Miss Ended Goals; stale messages are incidents for observability, not for a cleanup job |
 | Architecture check | `dependency-cruiser`, run with pnpm | The Nest docs have no recipe for import boundaries. It checks the resolved import graph (including `.js` → `.ts` under `nodenext` and the `@app/*` aliases), and its rules compose, which oxlint's overrides don't (section 11.1) |
-| Tests | Vitest with SWC (`unplugin-swc`, [`recipes/swc.md`](nestjs/recipes/swc.md)), PGlite | Aggregate tests as given/when/then on domain events; ACL, cache and filter tests; e2e tests per service on PGlite with the Liquibase changesets, the relay driven with `runOnce()`, as in the outbox docs' Testing section |
+| Tests | Vitest with SWC (`unplugin-swc`, [`recipes/swc.md`](nestjs/recipes/swc.md)), Testcontainers (`@testcontainers/postgresql`, `@testcontainers/redis`, `@testcontainers/rabbitmq`) | Aggregate tests as given/when/then on domain events; ACL, cache and filter tests; e2e tests per service on a real PostgreSQL in Docker with the Liquibase changesets, the relay driven with `runOnce()`, as in the outbox docs' Testing section. A container per e2e file, the same images as compose.yaml: no emulator to diverge from production. The lock store's and the RabbitMQ transport's contract suites (`pnpm test`) run the same way, each against its own container |
 | Build | Nest CLI monorepo with Rspack (the monorepo default) | One bundle per service in `dist/apps/<service>/main.js`; mail templates copied as CLI assets |
 | API collections | Postman: `postman/workout-tracking.postman_collection.json` (REST), `postman/training-progress.postman_collection.json` (GraphQL) | Every request checks its status code; both run green with newman against the Compose setup |
 

@@ -11,7 +11,7 @@ export default defineConfig({
     root: './',
     include: ['**/*.e2e-spec.ts'],
     exclude: [...configDefaults.exclude, '.node_modules-root/**', 'dist/**'],
-    // Each e2e file starts its own in-process PostgreSQL (PGlite): give it time to boot.
+    // Each e2e file starts its own real PostgreSQL in Docker (Testcontainers): give it time to boot.
     testTimeout: 30_000,
     hookTimeout: 60_000,
   },

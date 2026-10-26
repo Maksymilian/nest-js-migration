@@ -1,5 +1,7 @@
 allowBuilds:
   '@apollo/protobufjs': false
   '@swc/core': true
+  cpu-features: true
   esbuild: true
   protobufjs: false
+  ssh2: true

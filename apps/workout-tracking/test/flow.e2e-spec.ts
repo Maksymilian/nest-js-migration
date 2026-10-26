@@ -1,4 +1,3 @@
-import type { PGlite } from '@electric-sql/pglite';
 import { FLOW_ID } from '@app/telemetry';
 import { WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
 import type { INestApplication } from '@nestjs/common';
@@ -7,11 +6,11 @@ import { Test } from '@nestjs/testing';
 import { context, propagation, ROOT_CONTEXT } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CBaggagePropagator } from '@opentelemetry/core';
-import { drizzle } from 'drizzle-orm/pglite';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { of } from 'rxjs';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
-import { migratedDatabase } from './support/migrated-database.js';
+import { migratedDatabase, type MigratedDatabase } from './support/migrated-database.js';
 
 process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
 process.env.RABBITMQ_URL = 'amqp://localhost:1';
@@ -28,7 +27,7 @@ const { configureHttp } = await import('../src/platform/http/configure-http.js')
  * Only the context manager and the baggage propagator of instrumentation.ts are needed for that.
  */
 describe('Workout Tracking: flow (e2e)', () => {
-  let client: PGlite;
+  let client: MigratedDatabase;
   let app: INestApplication<App>;
   const api = () => request(app.getHttpServer());
 
