@@ -697,7 +697,7 @@
               "datasourceUid": "prometheus",
               "model": {
                 "refId": "A",
-                "expr": "avg by (deployment_environment_name, service_name) (avg_over_time(nodejs_eventloop_utilization_ratio[1m]))",
+                "expr": "max by (deployment_environment_name, service_name) (avg_over_time(nodejs_eventloop_utilization_ratio[1m]))",
                 "instant": true,
                 "range": false
               }
