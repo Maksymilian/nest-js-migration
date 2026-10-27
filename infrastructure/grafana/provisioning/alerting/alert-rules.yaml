@@ -622,6 +622,108 @@
           ]
         },
         {
+          "uid": "event-loop-delay-high",
+          "title": "Event loop delay over 100ms",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: event loop delay p99 over 100ms",
+            "description": "For over a minute, the 99th percentile event loop delay reached {{ $values.A.Value | printf \"%.3f\" }}s ({{ $labels.deployment_environment_name }}): CPU-heavy JavaScript is running on the main thread (runtime-node auto-instrumentation, libs/telemetry/src/instrumentation.ts). It should move to a worker thread (@app/worker-pool) instead. Health checks and other requests on the same instance may be slow or timing out meanwhile."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (deployment_environment_name, service_name) (max_over_time(nodejs_eventloop_delay_p99_seconds[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "event-loop-utilization-high",
+          "title": "Event loop utilization over 90%",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: event loop utilization over 90%",
+            "description": "For over a minute, the main thread spent {{ $values.A.Value | humanizePercentage }} of its time running JavaScript ({{ $labels.deployment_environment_name }}), leaving almost none idle for new requests: it is saturated, not just occasionally delayed (see the event loop delay rule). Look for CPU-heavy synchronous code that should run on a worker thread (@app/worker-pool) instead."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (deployment_environment_name, service_name) (avg_over_time(nodejs_eventloop_utilization_ratio[1m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.9
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
           "uid": "database-connections-waiting",
           "title": "Requests waiting for a database connection",
           "condition": "C",
