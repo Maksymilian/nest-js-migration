@@ -707,6 +707,7 @@ Based on [`reliability/terminus.md`](nestjs/reliability/terminus.md). Every serv
 | Training Progress | Its PostgreSQL | Redis (reads fall back to PostgreSQL); RabbitMQ (queries still work, and consumption resumes when it's back) |
 
 - PostgreSQL: a custom indicator with `HealthIndicatorService.attempt()` running `select 1`; Terminus has no Drizzle indicator.
+- An instance starts while its PostgreSQL is down: liveness answers `200`, readiness `503` until the database answers. The outbox store (`StartupTolerantPostgresOutboxStore`) skips its startup schema check when `select 1` fails and makes it at its first call; a database that answers with a schema that's behind still fails the startup. When PostgreSQL restarts, the pool's `error` listener (`withPoolErrorsLogged()`) logs each lost idle connection instead of letting it end the process, and the pool reconnects at the next query.
 - Redis: a custom indicator that returns `degraded()` when a cache round trip fails.
 - RabbitMQ: `MicroserviceHealthIndicator.pingCheck()` with `Transport.RMQ`, reported as `degraded` (a custom `attempt()` indicator if the built-in one doesn't support RMQ).
 - `TerminusModule.forRoot({ gracefulShutdownTimeoutMs })` and `app.enableShutdownHooks()`: on `SIGTERM`, readiness turns `503` before the app stops, and the outbox relay drains instead of leaving messages leased.
