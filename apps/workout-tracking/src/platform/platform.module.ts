@@ -5,7 +5,7 @@ import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { DrizzleModule, getDrizzleToken } from '@nestjs/drizzle';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ClientProxyTransport, OutboxModule, OutboxStorage } from '@nestjs/outbox';
-import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
+import { PostgresOutboxStore } from '@nestjs/outbox/postgres';
 import { ResilienceModule } from '@nestjs/resilience';
 import { minutes, ThrottlerModule } from '@nestjs/throttler';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -13,7 +13,7 @@ import { isPublishedLanguage, PUBLISHED_LANGUAGE_EXCHANGE } from '../workout-tra
 import { toCloudEvent } from '../workout-tracking/published-language/cloud-event.mapper.js';
 import { workoutTrackingRoutes } from '../workout-tracking/published-language/routes.js';
 import { type Environment, validateEnvironment } from './config/environment.js';
-import type { Database } from './database/database.js';
+import { type Database, withPoolErrorsLogged } from './database/database.js';
 import { Transactions } from './database/transactions.js';
 import { HealthModule } from './health/health.module.js';
 import { DomainErrorFilter } from './http/domain-error.filter.js';
@@ -22,6 +22,7 @@ import { CloudEventSerializer } from './messaging/cloud-event.serializer.js';
 import { DomainEventPublisher } from './outbox/domain-event-publisher.js';
 import { OutboxDomainEventPublisher } from './outbox/outbox-domain-event-publisher.js';
 import { RouteTable } from './outbox/route-table.js';
+import { StartupTolerantPostgresOutboxStore } from './outbox/startup-tolerant-postgres-outbox-store.js';
 import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
 
 /** The RabbitMQ client the outbox relay publishes integration events through. */
@@ -45,14 +46,17 @@ export const WORKOUT_TRACKING_BROKER = 'WORKOUT_TRACKING_BROKER';
       inject: [ConfigService],
       // A pg pool on PostgreSQL instance 1, closed after the relay drained on shutdown.
       useFactory: (config: ConfigService<Environment, true>) => ({
-        drizzle,
-        connection: {
-          connectionString: config.get('DATABASE_URL', { infer: true }),
-          min: 2,
-          max: 30,
-          connectionTimeoutMillis: 5_000,
-          application_name: 'workout-tracking',
-        },
+        db: withPoolErrorsLogged(
+          drizzle({
+            connection: {
+              connectionString: config.get('DATABASE_URL', { infer: true }),
+              min: 2,
+              max: 30,
+              connectionTimeoutMillis: 5_000,
+              application_name: 'workout-tracking',
+            },
+          }),
+        ),
       }),
     }),
     OutboxModule.forRootAsync({
@@ -118,12 +122,11 @@ export const WORKOUT_TRACKING_BROKER = 'WORKOUT_TRACKING_BROKER';
   ],
   providers: [
     {
-      // Messages in this service's database, in a schema of their own (nest_outbox). Liquibase
-      // creates and migrates that schema (changeset 0002), so the store never does.
+      // Messages in this service's database (nest_outbox, Liquibase changeset 0002); the instance
+      // starts while PostgreSQL is down.
       provide: PostgresOutboxStore,
       inject: [getDrizzleToken(), OutboxStorage],
-      useFactory: (db: Database, outboxStorage: OutboxStorage) =>
-        new PostgresOutboxStore({ executor: fromDrizzle(db), migrate: false }, outboxStorage),
+      useFactory: (db: Database, outboxStorage: OutboxStorage) => new StartupTolerantPostgresOutboxStore(db, outboxStorage),
     },
     { provide: RouteTable, useValue: workoutTrackingRoutes },
     { provide: DomainEventPublisher, useClass: OutboxDomainEventPublisher },

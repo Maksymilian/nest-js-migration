@@ -9,7 +9,7 @@ import { DrizzleModule, getDrizzleToken } from '@nestjs/drizzle';
 import { GraphQLModule } from '@nestjs/graphql';
 import { LocksModule } from '@nestjs/locks';
 import { OutboxModule, OutboxStorage } from '@nestjs/outbox';
-import { fromDrizzle, PostgresOutboxStore } from '@nestjs/outbox/postgres';
+import { PostgresOutboxStore } from '@nestjs/outbox/postgres';
 import { ResilienceModule } from '@nestjs/resilience';
 import { minutes, ThrottlerModule } from '@nestjs/throttler';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -18,7 +18,7 @@ import { ReadCache } from './cache/read-cache.js';
 import { RedisLockStore } from './cache/redis-lock-store.js';
 import { redisStore } from './cache/redis-store.js';
 import { type Environment, validateEnvironment } from './config/environment.js';
-import type { Database } from './database/database.js';
+import { type Database, withPoolErrorsLogged } from './database/database.js';
 import { Transactions } from './database/transactions.js';
 import { DomainErrorFilter } from './errors/domain-error.filter.js';
 import { RateLimitFilter } from './errors/rate-limit.filter.js';
@@ -30,6 +30,7 @@ import { DomainEventPublisher } from './outbox/domain-event-publisher.js';
 import { OutboxDomainEventPublisher } from './outbox/outbox-domain-event-publisher.js';
 import { RouteTable } from './outbox/route-table.js';
 import { trainingProgressRoutes } from './outbox/routes.js';
+import { StartupTolerantPostgresOutboxStore } from './outbox/startup-tolerant-postgres-outbox-store.js';
 import { OutboxAdminModule } from './outbox-admin/outbox-admin.module.js';
 import { TelegramModule } from './telegram/telegram.module.js';
 
@@ -54,15 +55,18 @@ import { TelegramModule } from './telegram/telegram.module.js';
       inject: [ConfigService],
       // A pg pool on PostgreSQL instance 2, closed after the relay drained on shutdown.
       useFactory: (config: ConfigService<Environment, true>) => ({
-        drizzle,
-        connection: {
-          connectionString: config.get('DATABASE_URL', { infer: true }),
-          min: 2,
-          max: 30,
-          connectionTimeoutMillis: 5_000,
-          statement_timeout: 15_000,
-          application_name: 'training-progress',
-        },
+        db: withPoolErrorsLogged(
+          drizzle({
+            connection: {
+              connectionString: config.get('DATABASE_URL', { infer: true }),
+              min: 2,
+              max: 30,
+              connectionTimeoutMillis: 5_000,
+              statement_timeout: 15_000,
+              application_name: 'training-progress',
+            },
+          }),
+        ),
       }),
     }),
     OutboxModule.forRootAsync({
@@ -116,12 +120,11 @@ import { TelegramModule } from './telegram/telegram.module.js';
   ],
   providers: [
     {
-      // Messages and inboxes in this service's database, in a schema of their own (nest_outbox).
-      // Liquibase creates and migrates that schema, so the store never does.
+      // Messages and inboxes in this service's database (nest_outbox, migrated by Liquibase); the
+      // instance starts while PostgreSQL is down.
       provide: PostgresOutboxStore,
       inject: [getDrizzleToken(), OutboxStorage],
-      useFactory: (db: Database, outboxStorage: OutboxStorage) =>
-        new PostgresOutboxStore({ executor: fromDrizzle(db), migrate: false }, outboxStorage),
+      useFactory: (db: Database, outboxStorage: OutboxStorage) => new StartupTolerantPostgresOutboxStore(db, outboxStorage),
     },
     { provide: RouteTable, useValue: trainingProgressRoutes },
     { provide: DomainEventPublisher, useClass: OutboxDomainEventPublisher },
