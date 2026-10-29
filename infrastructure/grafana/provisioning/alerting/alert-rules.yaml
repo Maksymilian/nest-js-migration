@@ -773,6 +773,261 @@
               }
             }
           ]
+        },
+        {
+          "uid": "http-request-duration-p95-high",
+          "title": "HTTP request duration p95 over 1 second",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: HTTP p95 at {{ with $values.A }}{{ .Value | humanizeDuration }}{{ end }}",
+            "description": "The slowest 5% of the requests in the last 5 minutes took over a second ({{ $labels.deployment_environment_name }}), for 5 minutes; reads time out at QUERY_TIMEOUT_MS (3 s by default). Check the database p99 and the requests waiting for a connection in the Latency row; the slow traces are in Tempo."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95, sum by (deployment_environment_name, service_name, le) (rate(http_server_request_duration_seconds_bucket[5m])))\n  and sum by (deployment_environment_name, service_name) (increase(http_server_request_duration_seconds_count[5m])) >= 20",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "graphql-operation-duration-p95-high",
+          "title": "GraphQL operation duration p95 over 1 second",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "GraphQL: {{ $labels.graphql_root_fields }} p95 at {{ with $values.A }}{{ .Value | humanizeDuration }}{{ end }}",
+            "description": "The slowest 5% of these operations in the last 5 minutes took over a second ({{ $labels.deployment_environment_name }}), for 5 minutes; a field times out at QUERY_TIMEOUT_MS (3 s by default)."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95, sum by (deployment_environment_name, graphql_root_fields, le) (rate(graphql_server_operation_duration_seconds_bucket[5m])))\n  and sum by (deployment_environment_name, graphql_root_fields) (increase(graphql_server_operation_duration_seconds_count[5m])) >= 20",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "database-operation-duration-p95-high",
+          "title": "Database operation duration p95 over 500 ms",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: PostgreSQL {{ $labels.db_operation_name }} p95 at {{ with $values.A }}{{ .Value | humanizeDuration }}{{ end }}",
+            "description": "The slowest 5% of the {{ $labels.db_operation_name }} statements in the last 5 minutes took over 500 ms ({{ $labels.deployment_environment_name }}), for 5 minutes: a slow query, locks, or a database short of resources. Find the statement in Tempo's slow traces."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95, sum by (deployment_environment_name, service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket[5m])))\n  and sum by (deployment_environment_name, service_name, db_operation_name) (increase(db_client_operation_duration_seconds_count[5m])) >= 20",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.5
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "outgoing-http-duration-p95-high",
+          "title": "Outgoing HTTP calls p95 over 5 seconds",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }} → {{ $labels.server_address }}: p95 at {{ with $values.A }}{{ .Value | humanizeDuration }}{{ end }}",
+            "description": "The slowest 5% of the calls to {{ $labels.server_address }} in the last 5 minutes took over 5 seconds ({{ $labels.deployment_environment_name }}), for 5 minutes: the provider (Telegram, mail...) is slow or unreachable."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95, sum by (deployment_environment_name, service_name, server_address, le) (rate(http_client_request_duration_seconds_bucket[5m])))\n  and sum by (deployment_environment_name, service_name, server_address) (increase(http_client_request_duration_seconds_count[5m])) >= 10",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        5
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "message-handling-duration-p95-high",
+          "title": "Message handling p95 over 5 seconds",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service }}: {{ $labels.span_name }} p95 at {{ with $values.A }}{{ .Value | humanizeDuration }}{{ end }}",
+            "description": "The slowest 5% of these messages in the last 5 minutes took over 5 seconds to handle, for 5 minutes (Tempo's span metrics, consumer spans). Slow handling backs up the queues: see the RabbitMQ row."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95, sum by (service, span_name, le) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_CONSUMER\"}[5m])))\n  and sum by (service, span_name) (increase(traces_spanmetrics_latency_count{span_kind=\"SPAN_KIND_CONSUMER\"}[5m])) >= 10",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        5
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
         }
       ]
     }
