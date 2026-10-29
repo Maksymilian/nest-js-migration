@@ -577,13 +577,455 @@
     },
     {
       "type": "row",
-      "title": "Rate limit, timeouts and faults (section 16; faults are the orange annotations)",
+      "id": 51,
+      "title": "Latency: p95 and p99",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 36
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Request duration p95 and p99, by service",
+      "description": "Incoming HTTP requests. p99 shows the slowest 1%, where timeouts start.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\", service_version=~\"$version\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\", service_version=~\"$version\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 37
+      },
+      "id": 52
+    },
+    {
+      "type": "timeseries",
+      "title": "GraphQL operation duration p95 and p99, by root fields",
+      "description": "Training Progress' GraphQL operations.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (graphql_root_fields, le) (rate(graphql_server_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\"}[$__rate_interval])))",
+          "legendFormat": "{{graphql_root_fields}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (graphql_root_fields, le) (rate(graphql_server_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\"}[$__rate_interval])))",
+          "legendFormat": "{{graphql_root_fields}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 37
+      },
+      "id": 53
+    },
+    {
+      "type": "timeseries",
+      "title": "Database operation duration p95 and p99, by operation",
+      "description": "PostgreSQL statements, by operation (SELECT, INSERT...). Rises before the HTTP percentiles when the database is the cause.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} {{db_operation_name}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} {{db_operation_name}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 37
+      },
+      "id": 54
+    },
+    {
+      "type": "timeseries",
+      "title": "Outgoing HTTP calls p95 and p99, by host",
+      "description": "Calls the services make: Telegram, mail and any other API.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (service_name, server_address, le) (rate(http_client_request_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} → {{server_address}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service_name, server_address, le) (rate(http_client_request_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} → {{server_address}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 45
+      },
+      "id": 55
+    },
+    {
+      "type": "timeseries",
+      "title": "Message handling p95 and p99, the 10 slowest spans",
+      "description": "Tempo's span metrics for consumer and internal spans: message handlers, policies, the outbox. Work no HTTP request measures. The 10 slowest at each percentile.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, histogram_quantile(0.95, sum by (service, span_name, le) (rate(traces_spanmetrics_latency_bucket{service=~\"$service\", span_kind=~\"SPAN_KIND_CONSUMER|SPAN_KIND_INTERNAL\"}[$__rate_interval]))))",
+          "legendFormat": "{{service}} {{span_name}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, histogram_quantile(0.99, sum by (service, span_name, le) (rate(traces_spanmetrics_latency_bucket{service=~\"$service\", span_kind=~\"SPAN_KIND_CONSUMER|SPAN_KIND_INTERNAL\"}[$__rate_interval]))))",
+          "legendFormat": "{{service}} {{span_name}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 45
+      },
+      "id": 56
+    },
+    {
+      "type": "timeseries",
+      "title": "Calls between services p99 (service graph)",
+      "description": "From Tempo's service graph: the server side of each call, client → server.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (client, server, le) (rate(traces_service_graph_request_server_seconds_bucket{}[$__rate_interval])))",
+          "legendFormat": "{{client}} → {{server}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 45
+      },
+      "id": 57
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis command latency p99, by command",
+      "description": "Redis' own latency per command, from INFO (microseconds).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (cmd, le) (rate(redis_commands_latencies_usec_bucket{}[$__rate_interval])))",
+          "legendFormat": "{{cmd}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 53
+      },
+      "id": 58
+    },
+    {
+      "type": "timeseries",
+      "title": "Garbage collection pauses p99",
+      "description": "V8's GC pauses, which stop the process.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service_name, le) (rate(v8js_gc_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "id": 60
+    },
+    {
+      "type": "row",
+      "title": "Rate limit, timeouts and faults (section 16; faults are the orange annotations)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
       },
       "id": 42,
       "panels": []
@@ -632,7 +1074,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 37
+        "y": 62
       },
       "id": 43
     },
@@ -680,7 +1122,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 37
+        "y": 62
       },
       "id": 44
     },
@@ -737,7 +1179,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 37
+        "y": 62
       },
       "id": 45
     },
@@ -785,7 +1227,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 37
+        "y": 62
       },
       "id": 46
     },
@@ -798,7 +1240,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 70
       },
       "id": 47
     },
@@ -846,7 +1288,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 46
+        "y": 71
       },
       "id": 48
     },
@@ -894,7 +1336,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 46
+        "y": 71
       },
       "id": 49
     },
@@ -942,7 +1384,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 46
+        "y": 71
       },
       "id": 50
     },
@@ -955,7 +1397,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 79
       },
       "panels": []
     },
@@ -980,7 +1422,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 80
       },
       "id": 15
     },
@@ -1008,7 +1450,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 80
       },
       "id": 16,
       "description": "The latest traces of the services, in the interface picked above (with All, every trace)."
@@ -1022,7 +1464,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 65
+        "y": 90
       },
       "panels": []
     },
@@ -1050,7 +1492,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 91
       },
       "id": 18
     },
@@ -1081,7 +1523,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 91
       },
       "id": 19
     },
@@ -1094,7 +1536,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 75
+        "y": 100
       },
       "panels": []
     },
@@ -1141,7 +1583,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 76
+        "y": 101
       },
       "id": 21
     },
@@ -1197,7 +1639,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 76
+        "y": 101
       },
       "id": 22
     },
@@ -1244,7 +1686,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 76
+        "y": 101
       },
       "id": 23
     },
@@ -1291,7 +1733,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 84
+        "y": 109
       },
       "id": 24
     },
@@ -1338,7 +1780,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 84
+        "y": 109
       },
       "id": 25
     },
@@ -1351,7 +1793,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 117
       },
       "panels": []
     },
@@ -1408,7 +1850,7 @@
         "h": 8,
         "w": 4,
         "x": 0,
-        "y": 93
+        "y": 118
       },
       "id": 27
     },
@@ -1456,7 +1898,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 93
+        "y": 118
       },
       "id": 28
     },
@@ -1512,7 +1954,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 93
+        "y": 118
       },
       "id": 29
     },
@@ -1559,7 +2001,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 101
+        "y": 126
       },
       "id": 30
     },
@@ -1606,7 +2048,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 101
+        "y": 126
       },
       "id": 31
     },
@@ -1653,7 +2095,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 101
+        "y": 126
       },
       "id": 32
     },
@@ -1666,7 +2108,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 134
       },
       "panels": []
     },
@@ -1735,7 +2177,7 @@
         "h": 8,
         "w": 4,
         "x": 0,
-        "y": 110
+        "y": 135
       },
       "id": 34
     },
@@ -1791,7 +2233,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 110
+        "y": 135
       },
       "id": 35
     },
@@ -1838,7 +2280,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 110
+        "y": 135
       },
       "id": 36
     },
@@ -1885,7 +2327,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 118
+        "y": 143
       },
       "id": 37
     },
@@ -1932,7 +2374,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 118
+        "y": 143
       },
       "id": 38
     },
@@ -1988,7 +2430,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 118
+        "y": 143
       },
       "id": 39
     },
@@ -2001,7 +2443,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 151
       },
       "panels": []
     },
@@ -2032,7 +2474,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 152
       },
       "id": 41,
       "description": "Errors and warnings in the interface picked above. RabbitMQ's and Redis' own logs have no interface: they show with All only."
