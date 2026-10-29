@@ -647,8 +647,8 @@
     },
     {
       "type": "timeseries",
-      "title": "GraphQL operation duration p99, by root fields",
-      "description": "Training Progress' GraphQL operations; the p95 is in the GraphQL row.",
+      "title": "GraphQL operation duration p95 and p99, by root fields",
+      "description": "Training Progress' GraphQL operations.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -660,8 +660,17 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
+          "expr": "histogram_quantile(0.95, sum by (graphql_root_fields, le) (rate(graphql_server_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\"}[$__rate_interval])))",
+          "legendFormat": "{{graphql_root_fields}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.99, sum by (graphql_root_fields, le) (rate(graphql_server_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\"}[$__rate_interval])))",
-          "legendFormat": "{{graphql_root_fields}}"
+          "legendFormat": "{{graphql_root_fields}} p99"
         }
       ],
       "fieldConfig": {
@@ -695,8 +704,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Database operation duration p99, by operation",
-      "description": "PostgreSQL statements, by operation (SELECT, INSERT...). Rises before the HTTP p99 when the database is the cause.",
+      "title": "Database operation duration p95 and p99, by operation",
+      "description": "PostgreSQL statements, by operation (SELECT, INSERT...). Rises before the HTTP percentiles when the database is the cause.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -708,8 +717,17 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
+          "expr": "histogram_quantile(0.95, sum by (service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} {{db_operation_name}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.99, sum by (service_name, db_operation_name, le) (rate(db_client_operation_duration_seconds_bucket{deployment_environment_name=~\"$env\", service_name=~\"$service\"}[$__rate_interval])))",
-          "legendFormat": "{{service_name}} {{db_operation_name}}"
+          "legendFormat": "{{service_name}} {{db_operation_name}} p99"
         }
       ],
       "fieldConfig": {
@@ -800,8 +818,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Message handling p99, the 10 slowest spans",
-      "description": "Tempo's span metrics for consumer and internal spans: message handlers, policies, the outbox. Work no HTTP request measures.",
+      "title": "Message handling p95 and p99, the 10 slowest spans",
+      "description": "Tempo's span metrics for consumer and internal spans: message handlers, policies, the outbox. Work no HTTP request measures. The 10 slowest at each percentile.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -813,8 +831,17 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
+          "expr": "topk(10, histogram_quantile(0.95, sum by (service, span_name, le) (rate(traces_spanmetrics_latency_bucket{service=~\"$service\", span_kind=~\"SPAN_KIND_CONSUMER|SPAN_KIND_INTERNAL\"}[$__rate_interval]))))",
+          "legendFormat": "{{service}} {{span_name}} p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "topk(10, histogram_quantile(0.99, sum by (service, span_name, le) (rate(traces_spanmetrics_latency_bucket{service=~\"$service\", span_kind=~\"SPAN_KIND_CONSUMER|SPAN_KIND_INTERNAL\"}[$__rate_interval]))))",
-          "legendFormat": "{{service}} {{span_name}}"
+          "legendFormat": "{{service}} {{span_name}} p99"
         }
       ],
       "fieldConfig": {
