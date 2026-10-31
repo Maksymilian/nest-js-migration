@@ -33,6 +33,10 @@
     {
       "key": "setSince",
       "value": ""
+    },
+    {
+      "key": "noMembershipMemberId",
+      "value": ""
     }
   ],
   "item": [
@@ -324,7 +328,7 @@
           }
         }
       ],
-      "description": "Queries: read models, cached in Redis where useful."
+      "description": "Queries: read models, cached in Valkey where useful."
     },
     {
       "name": "Training goals",
@@ -423,6 +427,97 @@
               ]
             },
             "description": "Only the goals set at or after setSince: a week ago, from the pre-request script. Combine it with status: ACTIVE to get the active goals set this week."
+          }
+        },
+        {
+          "name": "Set a goal without a membership: one is allowed",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A member Billing never heard of, new on every run: their goal allowance is one active goal.",
+                  "pm.collectionVariables.set('noMembershipMemberId', `no-membership-${Date.now()}@example.com`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responds 200 without errors', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().errors).to.eql(undefined); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ($input: SetTrainingGoalInput!) { setTrainingGoal(input: $input) { id status } }\n",
+                "variables": "{\n  \"input\": {\n    \"memberId\": \"{{noMembershipMemberId}}\",\n    \"metric\": \"WORKOUT_COUNT\",\n    \"target\": 3,\n    \"startsOn\": \"2026-10-01T00:00:00Z\",\n    \"endsOn\": \"2027-01-01T00:00:00Z\"\n  }\n}"
+              }
+            },
+            "url": {
+              "raw": "{{trainingProgressUrl}}/graphql",
+              "host": [
+                "{{trainingProgressUrl}}"
+              ],
+              "path": [
+                "graphql"
+              ]
+            },
+            "description": "A member without a membership in Billing may hold one active training goal (their Goal Allowance, docs/ubiquitous-language.md)."
+          }
+        },
+        {
+          "name": "Set a second goal without a membership (CONFLICT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responds 200 with a GraphQL error', () => pm.response.to.have.status(200));",
+                  "pm.test('is CONFLICT: one active goal, and no membership', () => pm.expect(pm.response.json().errors[0].extensions.code).to.eql('CONFLICT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation ($input: SetTrainingGoalInput!) { setTrainingGoal(input: $input) { id status } }\n",
+                "variables": "{\n  \"input\": {\n    \"memberId\": \"{{noMembershipMemberId}}\",\n    \"metric\": \"WORKOUT_COUNT\",\n    \"target\": 3,\n    \"startsOn\": \"2026-10-01T00:00:00Z\",\n    \"endsOn\": \"2027-01-01T00:00:00Z\"\n  }\n}"
+              }
+            },
+            "url": {
+              "raw": "{{trainingProgressUrl}}/graphql",
+              "host": [
+                "{{trainingProgressUrl}}"
+              ],
+              "path": [
+                "graphql"
+              ]
+            },
+            "description": "The same member's second active goal: refused until they have a membership (Ada has one: any number)."
           }
         },
         {

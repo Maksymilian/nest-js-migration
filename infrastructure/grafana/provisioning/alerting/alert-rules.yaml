@@ -2,6 +2,11 @@
 # Evaluated every minute on Prometheus.
 {
   "apiVersion": 1,
+  "deleteRules": [
+    { "orgId": 1, "uid": "redis-unreachable" },
+    { "orgId": 1, "uid": "redis-memory-near-limit" },
+    { "orgId": 1, "uid": "redis-evictions" }
+  ],
   "groups": [
     {
       "orgId": 1,
@@ -265,8 +270,8 @@
           ]
         },
         {
-          "uid": "redis-unreachable",
-          "title": "Redis unreachable",
+          "uid": "valkey-unreachable",
+          "title": "Valkey unreachable",
           "condition": "C",
           "for": "1m",
           "noDataState": "Alerting",
@@ -276,8 +281,8 @@
             "team": "fitness-platform"
           },
           "annotations": {
-            "summary": "Redis {{ $labels.instance }} unreachable",
-            "description": "Alloy can't read Redis (or, without data, Alloy itself isn't scraping). Training Progress keeps serving queries without its cache, slower."
+            "summary": "Valkey {{ $labels.instance }} unreachable",
+            "description": "Alloy can't read Valkey (or, without data, Alloy itself isn't scraping). Training Progress keeps serving queries without its cache, slower."
           },
           "data": [
             {
@@ -316,8 +321,8 @@
           ]
         },
         {
-          "uid": "redis-memory-near-limit",
-          "title": "Redis memory over 90% of maxmemory",
+          "uid": "valkey-memory-near-limit",
+          "title": "Valkey memory over 90% of maxmemory",
           "condition": "C",
           "for": "5m",
           "noDataState": "OK",
@@ -327,8 +332,8 @@
             "team": "fitness-platform"
           },
           "annotations": {
-            "summary": "Redis {{ $labels.instance }} over 90% of maxmemory",
-            "description": "It uses {{ $values.A.Value | humanizePercentage }} of maxmemory: it starts evicting cached read models soon. Without maxmemory (Redis' default, 0: no limit) there is no ratio, and this rule stays silent."
+            "summary": "Valkey {{ $labels.instance }} over 90% of maxmemory",
+            "description": "It uses {{ $values.A.Value | humanizePercentage }} of maxmemory: it starts evicting cached read models soon. Without maxmemory (Valkey's default, 0: no limit) there is no ratio, and this rule stays silent."
           },
           "data": [
             {
@@ -367,8 +372,8 @@
           ]
         },
         {
-          "uid": "redis-evictions",
-          "title": "Redis evicting keys",
+          "uid": "valkey-evictions",
+          "title": "Valkey evicting keys",
           "condition": "C",
           "for": "0s",
           "noDataState": "OK",
@@ -378,7 +383,7 @@
             "team": "fitness-platform"
           },
           "annotations": {
-            "summary": "Redis {{ $labels.instance }} is evicting keys",
+            "summary": "Valkey {{ $labels.instance }} is evicting keys",
             "description": "{{ $values.A.Value | printf \"%.0f\" }} keys evicted in the last 5 minutes because of maxmemory: cached read models disappear early, and queries go to PostgreSQL."
           },
           "data": [
@@ -1021,6 +1026,108 @@
                       "type": "gt",
                       "params": [
                         5
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "stripe-events-failing",
+          "title": "Stripe events failing",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $labels.stripe_event_type }} from Stripe failing",
+            "description": "Billing refused or couldn't apply {{ $values.A.Value | printf \"%.0f\" }} of Stripe's {{ $labels.stripe_event_type }} events in 5 minutes ({{ $labels.deployment_environment_name }}). Stripe sends them again for 3 days (the Stripe CLI doesn't: `stripe events resend <id>`). A 422 (an unknown currency, a malformed event) fails again: see the error log and the Dashboard's event; a 404 or 409 (a change for a membership not started yet, a payment for a second one) is an incident to look at. Section 18.5."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name, stripe_event_type) (increase(billing_stripe_events_total{outcome=\"failed\"}[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "webhook-verification-failures",
+          "title": "Webhooks failing their signature check",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "fitness-platform"
+          },
+          "annotations": {
+            "summary": "{{ $labels.service_name }}: {{ $labels.webhook_receiver }} webhooks refused ({{ $labels.reason }})",
+            "description": "{{ $values.A.Value | printf \"%.0f\" }} requests to the {{ $labels.webhook_receiver }} webhook were refused in 5 minutes ({{ $labels.deployment_environment_name }}), reason {{ $labels.reason }}: a signing secret that doesn't match the sender's (STRIPE_WEBHOOK_SECRET after the Stripe CLI or the Dashboard's endpoint changed), or someone posting to the route."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum by (deployment_environment_name, service_name, webhook_receiver, reason) (increase(webhooks_verification_failures_total[5m]))",
+                "instant": true,
+                "range": false
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
                       ]
                     }
                   }
