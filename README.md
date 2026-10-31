@@ -1,6 +1,6 @@
 # Fitness platform
 
-Two NestJS microservices, designed with Domain-Driven Design: **Workout Tracking** records what members do on connected equipment, and **Training Progress** turns those workouts into progress: a training log, progress summaries, streaks, personal records and training goals, with email notifications.
+Three NestJS microservices, designed with Domain-Driven Design: **Workout Tracking** records what members do on connected equipment, **Training Progress** turns those workouts into progress: a training log, progress summaries, streaks, personal records and training goals, with email notifications, and **Billing** keeps members' memberships and the ledger of what they paid, with Stripe collecting the money.
 
 ## Getting started
 
@@ -10,37 +10,46 @@ Prerequisites: Node.js 24, pnpm, Docker with Compose.
 pnpm install
 cp apps/workout-tracking/.env.example apps/workout-tracking/.env
 cp apps/training-progress/.env.example apps/training-progress/.env
+cp apps/billing/.env.example apps/billing/.env
 
-# PostgreSQL x2, Redis and RabbitMQ
+# PostgreSQL x3, Valkey and RabbitMQ
 docker compose up -d --wait
 
-# both databases' schemas, with test records
+# the databases' schemas, with test records
 scripts/database/liquibase.sh workout-tracking update
 scripts/database/liquibase.sh training-progress update
+scripts/database/liquibase.sh billing update
 ```
 
-Liquibase (`apps/<service>/liquibase`, run in Docker by `scripts/database/liquibase.sh`) creates and updates both databases, including the outbox's `nest_outbox` schema, and adds test records: Ada's bike (`BK-0001`, paired with `ada@example.com`), Grace's treadmill (`TM-0001`), an unpaired rower (`RW-0001`), and two active training goals. Leave the test records out with `scripts/database/liquibase.sh <service> update --context-filter=none`. RabbitMQ's exchange, queue, dead-letter exchange and queue come from `infrastructure/rabbitmq/definitions.json`.
+Liquibase (`apps/<service>/liquibase`, run in Docker by `scripts/database/liquibase.sh`) creates and updates the three databases, including the outbox's `nest_outbox` schema, and adds test records: Ada's bike (`BK-0001`, paired with `ada@example.com`), Grace's treadmill (`TM-0001`), an unpaired rower (`RW-0001`), two active training goals, and Ada's monthly membership with one payment (Grace has none, so she may hold one active goal). Leave the test records out with `scripts/database/liquibase.sh <service> update --context-filter=none`. RabbitMQ's exchange, queue, dead-letter exchange and queue come from `infrastructure/rabbitmq/definitions.json`.
 
 | Service | Port | Main API |
 |---|---|---|
 | Workout Tracking | 3001 | REST, internal: `http://localhost:3001/internal/v1/...` |
 | Training Progress | 3002 | GraphQL: `http://localhost:3002/graphql` (Apollo Sandbox in the browser) |
+| Billing | 3003 | REST: `http://localhost:3003/v1/members/<email>/membership`, `/checkouts`, `/billing-portal`, `/ledger`; Stripe's webhook `/stripe/events` |
 | RabbitMQ management | 15672 | `fitness` / `fitness` |
 
 ```bash
 # development, with watch mode and OpenTelemetry (one terminal each)
 pnpm start:dev:workout-tracking
 pnpm start:dev:training-progress
+pnpm start:dev:billing
 
 # production build
 pnpm build
 pnpm start:prod:workout-tracking
 pnpm start:prod:training-progress
+pnpm start:prod:billing
 ```
 
-Both services send security headers on every response. To call GraphQL from a web app in a browser, list its origin in Training Progress' `CORS_ORIGINS` (for example `http://localhost:5173`); without it, browsers on other origins are blocked (section 6.4 of `docs/architecture.md`).
+The services send security headers on every response. To call GraphQL from a web app in a browser, list its origin in Training Progress' `CORS_ORIGINS` (for example `http://localhost:5173`); without it, browsers on other origins are blocked (section 6.4 of `docs/architecture.md`).
 
 Until Identity exists, a member is identified by their email address (not verified). Notifications are written as `.eml` files to `var/mail` (`MAIL_TRANSPORT=file`); set `MAIL_TRANSPORT=smtp` with `SMTP_URL`, or `resend` with `RESEND_API_KEY`, to send them.
+
+### Stripe (test mode)
+
+Billing works without Stripe (checkouts answer 503). To pay for real in test mode: put a sandbox's test key (`sk_test_...`) into `apps/billing/.env` and the root `.env` as `STRIPE_SECRET_KEY`, run `pnpm stripe:seed-catalog` (the product, the prices and the Billing Portal), then `docker compose --profile stripe run --rm stripe-cli listen --print-secret` for `STRIPE_WEBHOOK_SECRET`, and `docker compose --profile stripe up -d stripe-cli` to forward Stripe's events to Billing. Pay with the card 4242 4242 4242 4242. Section 18.6 of `docs/architecture.md`.
 
 ### Try it
 
@@ -77,10 +86,11 @@ In production, set `TELEGRAM_UPDATES=webhook`, `TELEGRAM_WEBHOOK_URL` (the publi
 
 ### Postman
 
-`postman/` holds two collections; import them into Postman, or run them with `pnpm dlx newman run <file>`:
+`postman/` holds three collections; import them into Postman, or run them with `pnpm dlx newman run <file>`:
 
 - `workout-tracking.postman_collection.json`: the REST API, from registering and pairing equipment to recording, correcting and voiding workouts, with the error cases and the operations routes.
 - `training-progress.postman_collection.json`: the GraphQL API: a member's progress, training log, summaries, personal records and training goals, with the mutations and their domain errors.
+- `billing.postman_collection.json`: the REST API: memberships, checkouts, the billing portal and the ledger, and Stripe's events, signed in a pre-request script (start Billing with `STRIPE_WEBHOOK_SECRET=whsec_postman_local_secret`).
 
 Run the Workout Tracking collection first: its workouts are what Training Progress shows.
 
@@ -101,7 +111,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
 
 ## Operations
 
-- Health: `GET /health/live` and `GET /health/ready` on both services. Readiness is `down` without the service's PostgreSQL, and `degraded` (still 200) without RabbitMQ or Redis.
+- Health: `GET /health/live` and `GET /health/ready` on both services. Readiness is `down` without the service's PostgreSQL, and `degraded` (still 200) without RabbitMQ or Valkey.
 - Outbox: `GET /internal/v1/admin/outbox/stats` and `/dead-letters` on Workout Tracking, `/internal/admin/outbox/...` on Training Progress, with the `x-admin-token` header (`ADMIN_TOKEN`). Dead letters can be requeued with `POST .../dead-letters/:id/requeue`.
 - RabbitMQ dead letters (messages that aren't structured-mode CloudEvents, invalid integration events, or ones that failed 5 deliveries): queue `training-progress.workout-tracking.dlq`. Integration events travel as [CloudEvents](https://cloudevents.io) 1.0 (section 5.4 of `docs/architecture.md`).
 - Schedule triggers (section 7.5 of `docs/architecture.md`): Kubernetes CronJobs publish them, and one Training Progress instance handles each. Run one by hand, against the local RabbitMQ or another with `RABBITMQ_URL`:
@@ -117,7 +127,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push to `
 
 ### Observability: OpenTelemetry and the Grafana stack
 
-The services send traces, metrics and logs over OTLP to Grafana Alloy, which requires Basic Auth and sends them to Tempo, Prometheus and Loki; Alloy also scrapes RabbitMQ and Redis and collects their logs. Grafana shows them, with the **Fitness platform** dashboard and the alert rules (section 15 of `docs/architecture.md`).
+The services send traces, metrics and logs over OTLP to Grafana Alloy, which requires Basic Auth and sends them to Tempo, Prometheus and Loki; Alloy also scrapes RabbitMQ and Valkey and collects their logs. Grafana shows them, with the **Fitness platform** dashboard and the alert rules (section 15 of `docs/architecture.md`).
 
 ```bash
 cp .env.example .env                                    # GRAFANA_ADMIN_PASSWORD
@@ -132,7 +142,7 @@ Grafana: http://localhost:3000 (`admin`, `GRAFANA_ADMIN_PASSWORD`) > Dashboards 
 
 ### Rate limit, timeouts and faults
 
-With `RATE_LIMIT=on`, each service rejects a caller past `RATE_LIMIT_PER_MINUTE` requests a minute (429, with `TOO_MANY_REQUESTS` over GraphQL), and cuts a query after `QUERY_TIMEOUT_MS` (504, or `TIMEOUT`). Toxiproxy slows down or cuts a service's connections to PostgreSQL, Redis and RabbitMQ, to see them, and other failures, in Grafana (section 16 of `docs/architecture.md`, with the scenarios to try):
+With `RATE_LIMIT=on`, each service rejects a caller past `RATE_LIMIT_PER_MINUTE` requests a minute (429, with `TOO_MANY_REQUESTS` over GraphQL), and cuts a query after `QUERY_TIMEOUT_MS` (504, or `TIMEOUT`). Toxiproxy slows down or cuts a service's connections to PostgreSQL, Valkey and RabbitMQ, to see them, and other failures, in Grafana (section 16 of `docs/architecture.md`, with the scenarios to try):
 
 ```bash
 docker compose --profile faults --profile observability up -d --wait   # + Toxiproxy (API on localhost:8474)

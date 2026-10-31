@@ -1,3 +1,4 @@
+import { BILLING_SOURCE, BillingTopics } from '@app/billing-contracts';
 import { WORKOUT_TRACKING_SOURCE, WorkoutTrackingTopics } from '@app/workout-tracking-contracts';
 import { CACHE_MANAGER, type Cache } from '@nestjs/cache-manager';
 import type { INestApplication } from '@nestjs/common';
@@ -14,7 +15,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { migratedDatabase, type MigratedDatabase } from './support/migrated-database.js';
 
 process.env.DATABASE_URL = 'postgres://unused:unused@localhost:1/unused';
-process.env.REDIS_URL = 'redis://localhost:1';
+process.env.VALKEY_URL = 'valkey://localhost:1';
 process.env.RABBITMQ_URL = 'amqp://localhost:1';
 process.env.OUTBOX_RELAY = 'off'; // no poll loop: the tests drive the relay
 process.env.MAIL_TRANSPORT = 'file';
@@ -26,9 +27,10 @@ process.env.CORS_ORIGINS = 'https://app.fitness.example,http://localhost:5173';
 const { AppModule } = await import('../src/app.module.js');
 const { configureHttp } = await import('../src/platform/http/configure-http.js');
 const { DeadLetterTopology } = await import('../src/platform/messaging/dead-letter-topology.js');
-const { RedisLockStore } = await import('../src/platform/cache/redis-lock-store.js');
+const { ValkeyLockStore } = await import('../src/platform/cache/valkey-lock-store.js');
 const { CloudEventDeserializer } = await import('../src/platform/messaging/cloud-event.deserializer.js');
 const { WorkoutTrackingEventsController } = await import('../src/training-progress/workout-tracking-acl/workout-tracking-events.controller.js');
+const { BillingEventsController } = await import('../src/training-progress/billing-acl/billing-events.controller.js');
 const { MissEndedGoalsCommand } = await import('../src/training-progress/training-goals/application/commands/miss-ended-goals.command.js');
 const { ScheduleTriggersController } = await import('../src/training-progress/training-goals/interface/schedule/schedule-triggers.controller.js');
 const { ScheduleTriggers } = await import('../src/platform/messaging/schedule-triggers.js');
@@ -46,7 +48,7 @@ describe('Training Progress (e2e)', () => {
 
   beforeAll(async () => {
     client = await migratedDatabase();
-    cache = createCache(); // in memory: Redis itself is covered by the health and fallback tests
+    cache = createCache(); // in memory: Valkey itself is covered by the health and fallback tests
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(getDrizzleToken())
       .useValue(drizzle({ client }))
@@ -56,8 +58,8 @@ describe('Training Progress (e2e)', () => {
       .useValue(cache)
       .overrideProvider(DeadLetterTopology)
       .useValue({})
-      // No Redis: the locks are in memory, for this one instance.
-      .overrideProvider(RedisLockStore)
+      // No Valkey: the locks are in memory, for this one instance.
+      .overrideProvider(ValkeyLockStore)
       .useValue({})
       .compile();
     app = configureHttp(moduleRef.createNestApplication());
@@ -324,6 +326,53 @@ describe('Training Progress (e2e)', () => {
     });
   });
 
+  describe("goal allowance (Billing's memberships)", () => {
+    const SET_GOAL = `mutation ($input: SetTrainingGoalInput!) { setTrainingGoal(input: $input) { id status } }`;
+    const goal = (memberId: string) => ({ input: { memberId, metric: 'WORKOUT_COUNT', target: 5, startsOn: '2026-10-01T00:00:00Z', endsOn: '2027-01-01T00:00:00Z' } });
+
+    /** Delivers one of Billing's integration events to the anticorruption layer, as RabbitMQ does. */
+    async function membership(topic: string, memberId: string, revision: number) {
+      const channel = { ack: vi.fn(), nack: vi.fn() };
+      const context = { getChannelRef: () => channel, getMessage: () => ({}) };
+      const status = topic === BillingTopics.membershipStartedV1 ? 'ACTIVE' : 'ENDED';
+      const event = {
+        specversion: '1.0',
+        id: uuidv7(),
+        source: BILLING_SOURCE,
+        type: topic,
+        datacontenttype: 'application/json',
+        partitionkey: memberId,
+        data: { membershipId: '0199c3a2-0000-7000-8000-000000000999', memberId, plan: 'MONTHLY', status, paidThrough: '2026-12-01T00:00:00.000Z', renews: true, revision },
+      };
+      const acl = app.get(BillingEventsController);
+      await (topic === BillingTopics.membershipStartedV1 ? acl.membershipStarted(event, context) : acl.membershipEnded(event, context));
+      return channel.ack.mock.calls.length === 1;
+    }
+
+    it('permits one active goal without a membership, any number with one, and one again once it ended', async () => {
+      const member = 'allowance@example.com';
+      expect((await graphql(SET_GOAL, goal(member))).errors).toBeUndefined();
+      expect((await graphql(SET_GOAL, goal(member))).errors?.[0].extensions.code).toBe('CONFLICT');
+
+      expect(await membership(BillingTopics.membershipStartedV1, member, 1)).toBe(true);
+      expect((await graphql(SET_GOAL, goal(member))).errors).toBeUndefined();
+
+      expect(await membership(BillingTopics.membershipEndedV1, member, 2)).toBe(true);
+      expect((await graphql(SET_GOAL, goal(member))).errors?.[0].extensions.code).toBe('CONFLICT');
+      const { data } = await graphql<{ member: { trainingGoals: unknown[] } }>(`query ($id: ID!) { member(id: $id) { trainingGoals(status: ACTIVE) { id } } }`, { id: member });
+      expect(data.member.trainingGoals).toHaveLength(2); // the goals set are kept
+    });
+
+    it("ignores a membership's start that arrives after its end", async () => {
+      const member = 'late-start@example.com';
+      await membership(BillingTopics.membershipEndedV1, member, 2);
+      await membership(BillingTopics.membershipStartedV1, member, 1);
+
+      expect((await graphql(SET_GOAL, goal(member))).errors).toBeUndefined();
+      expect((await graphql(SET_GOAL, goal(member))).errors?.[0].extensions.code).toBe('CONFLICT');
+    });
+  });
+
   describe('progress summaries and streaks', () => {
     const SUMMARY = `query ($id: ID!, $date: DateTime) { member(id: $id) { progressSummary(period: WEEK, date: $date) { periodStart periodEnd workoutCount totalDistanceMeters } } }`;
 
@@ -368,7 +417,7 @@ describe('Training Progress (e2e)', () => {
       await request(app.getHttpServer()).get('/health/live').expect(200);
 
       const { body } = await request(app.getHttpServer()).get('/health/ready').expect(200);
-      expect(body).toMatchObject({ status: 'degraded', info: { postgres: { status: 'up' }, redis: { status: 'up' }, rabbitmq: { status: 'degraded' } } });
+      expect(body).toMatchObject({ status: 'degraded', info: { postgres: { status: 'up' }, valkey: { status: 'up' }, rabbitmq: { status: 'degraded' } } });
     });
 
     it('validates the member id as an email address', async () => {
